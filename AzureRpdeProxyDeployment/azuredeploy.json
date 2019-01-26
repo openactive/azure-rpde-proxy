@@ -79,14 +79,14 @@
         {
           "name": "[variables('databaseName')]",
           "type": "databases",
+          "dependsOn": [
+            "[resourceId('Microsoft.Sql/servers', variables('sqlserverName'))]"
+          ],
           "location": "[resourceGroup().location]",
           "tags": {
             "displayName": "Database"
           },
           "apiVersion": "2015-01-01",
-          "dependsOn": [
-            "[variables('sqlserverName')]"
-          ],
           "properties": {
             "edition": "Standard",
             "collation": "SQL_Latin1_General_CP1_CI_AS",
@@ -96,10 +96,10 @@
         },
         {
           "type": "firewallrules",
-          "apiVersion": "2014-04-01",
           "dependsOn": [
-            "[variables('sqlserverName')]"
+            "[resourceId('Microsoft.Sql/servers', variables('sqlserverName'))]"
           ],
+          "apiVersion": "2014-04-01",
           "location": "[resourceGroup().location]",
           "name": "AllowAllWindowsAzureIps",
           "properties": {
@@ -109,12 +109,12 @@
         },
         {
           "type": "firewallrules",
-          "apiVersion": "2014-04-01",
           "dependsOn": [
-            "[variables('sqlserverName')]"
+            "[resourceId('Microsoft.Sql/servers', variables('sqlserverName'))]"
           ],
+          "apiVersion": "2014-04-01",
           "location": "[resourceGroup().location]",
-          "name": "AllowDebugSQLServerIP",
+          "name": "AllowAllExternalIPsForDebug",
           "properties": {
             "endIpAddress": "255.255.255.255",
             "startIpAddress": "0.0.0.0"
@@ -150,7 +150,7 @@
           "name": "[variables('serviceBusQueueNamePurge')]",
           "type": "Queues",
           "dependsOn": [
-            "[concat('Microsoft.ServiceBus/namespaces/', variables('serviceBusNamespaceName'))]"
+            "[resourceId('Microsoft.ServiceBus/namespaces', variables('serviceBusNamespaceName'))]"
           ],
           "properties": {
             "lockDuration": "PT1M",
@@ -169,7 +169,7 @@
           "name": "[variables('serviceBusQueueNameFeedstate')]",
           "type": "Queues",
           "dependsOn": [
-            "[concat('Microsoft.ServiceBus/namespaces/', variables('serviceBusNamespaceName'))]"
+            "[resourceId('Microsoft.ServiceBus/namespaces', variables('serviceBusNamespaceName'))]"
           ],
           "properties": {
             "lockDuration": "PT1M",
@@ -188,7 +188,7 @@
           "name": "[variables('serviceBusQueueNameRegistration')]",
           "type": "Queues",
           "dependsOn": [
-            "[concat('Microsoft.ServiceBus/namespaces/', variables('serviceBusNamespaceName'))]"
+            "[resourceId('Microsoft.ServiceBus/namespaces', variables('serviceBusNamespaceName'))]"
           ],
           "properties": {
             "lockDuration": "PT1M",
@@ -298,7 +298,9 @@
       "dependsOn": [
         "[resourceId('Microsoft.Web/serverfarms', variables('hostingPlanName'))]",
         "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]",
-        "[resourceId('microsoft.insights/components', variables('appInsightsServiceName'))]"
+        "[resourceId('microsoft.insights/components', variables('appInsightsServiceName'))]",
+        "[resourceId('Microsoft.ServiceBus/namespaces', variables('serviceBusNamespaceName'))]",
+        "[resourceId('Microsoft.Sql/servers', variables('sqlserverName'))]"
       ],
       "resources": [
         {
