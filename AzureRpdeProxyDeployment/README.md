@@ -7,6 +7,10 @@
     <img src="http://armviz.io/visualizebutton.png"/>
 </a>
 
+<a href="https://azuredeploy.net/" target="_blank">
+    <img src="http://azuredeploy.net/deploybutton.png"/>
+</a>
+
 ## Overview
 
 This template deploys a Function App hosted in a new dedicated App Service Plan. The Function App has a child resource that enables continous integration and deploys the function code from a GitHub repository.
