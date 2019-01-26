@@ -31,9 +31,9 @@
     },
     "endpointSubdomain": {
       "type": "string",
-      "defaultValue": "lmscloud",
+      "defaultValue": "lmscloud-openactive-proxy",
       "metadata": {
-        "description": "Subdomain used in the web address of proxied OpenActive endpoints: https://<subdomain>-openactive.azurewebsites.net/api/feeds/"
+        "description": "Subdomain used in the web address of proxied OpenActive endpoints: https://<subdomain>.azurewebsites.net/api/feeds/"
       }
     },
     "resourcePostfix": {
@@ -41,13 +41,6 @@
       "defaultValue": "live",
       "metadata": {
         "description": "Postfix to help identify the deployed resource."
-      }
-    },
-    "feedBaseUrl": {
-      "type": "string",
-      "defaultValue": "",
-      "metadata": {
-        "description": "Image URL prefix, to be prepended to any image URL returned."
       }
     },
     "scaling": {
@@ -70,11 +63,12 @@
     "sqlserverAdminLogin": "[concat('l', uniqueString(resourceGroup().id, '9A08DDB9-95A1-495F-9263-D89738ED4205'))]",
     "sqlserverAdminLoginPassword": "[concat('P', uniqueString(resourceGroup().id, deployment().name, '224F5A8B-51DB-46A3-A7C8-59B0DD584A41'), 'x', '!')]",
     "databaseName": "[concat('openactive-proxy-', parameters('resourcePostfix'))]",
-    "functionAppName": "[concat(parameters('endpointSubdomain'), '-openactive')]",
+    "functionAppName": "[parameters('endpointSubdomain')]",
     "storageAccountName": "[concat('openactive', uniqueString(resourceGroup().id))]",
     "computeMode": "[if(equals(parameters('scaling'),'Dynamic'), 'Dynamic', 'Shared')]",
     "sku": "[if(equals(parameters('scaling'),'Dynamic'), 'Dynamic', 'Standard')]",
     "alwaysOn": "[if(equals(parameters('scaling'),'Dynamic'), 'false', 'true')]",
+    "feedBaseUrl": "[concat('https://', parameters('endpointSubdomain'), '.azurewebsites.net/')]",
     "defaultSASKeyName": "RootManageSharedAccessKey",
     "authRuleResourceId": "[resourceId('Microsoft.ServiceBus/namespaces/authorizationRules', variables('serviceBusNamespaceName'), variables('defaultSASKeyName'))]",
     "serviceBusQueueNamePurge": "purge",
@@ -279,7 +273,7 @@
             },
             {
               "name": "FeedBaseUrl",
-              "value": "[parameters('feedBaseUrl')]"
+              "value": "[variables('feedBaseUrl')]"
             },
             {
               "name": "SqlServerConnection",
