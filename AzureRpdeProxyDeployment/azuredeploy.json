@@ -1,5 +1,5 @@
 {
-  "$schema": "http://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+  "$schema": "https://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
   "contentVersion": "1.0.0.0",
   "parameters": {
     "repoURL": {
@@ -31,9 +31,16 @@
     },
     "endpointSubdomain": {
       "type": "string",
-      "defaultValue": "fusion-lifestyle",
+      "defaultValue": "lmscloud",
       "metadata": {
-        "description": "Subdomain used in the web address of the OpenActive endpoint: https://<subdomain>-openactive.azurewebsites.net/api/sessions"
+        "description": "Subdomain used in the web address of proxied OpenActive endpoints: https://<subdomain>-openactive.azurewebsites.net/api/feeds/"
+      }
+    },
+    "resourcePostfix": {
+      "type": "string",
+      "defaultValue": "live",
+      "metadata": {
+        "description": "Postfix to help identify the deployed resource."
       }
     },
     "feedBaseUrl": {
@@ -56,15 +63,15 @@
     }
   },
   "variables": {
-    "resourcePostfix": "openactive-rpde-proxy-[uniqueString(resourceGroup().id)]",
-    "serviceBusNamespaceName": "[concat('servicebus', variables('resourcePostfix'))]",
-    "hostingPlanName": "[concat('hostingplan', variables('resourcePostfix'))]",
-    "sqlserverName": "[concat('sqlserver', variables('resourcePostfix'))]",
+    "resourcePostfix": "[concat('openactive-proxy-', parameters('resourcePostfix'), '-', uniqueString(resourceGroup().id))]",
+    "serviceBusNamespaceName": "[concat('servicebus', '-', variables('resourcePostfix'))]",
+    "hostingPlanName": "[concat('hostingplan', '-', variables('resourcePostfix'))]",
+    "sqlserverName": "[concat('sqlserver', '-', variables('resourcePostfix'))]",
     "sqlserverAdminLogin": "[concat('l', uniqueString(resourceGroup().id, '9A08DDB9-95A1-495F-9263-D89738ED4205'))]",
     "sqlserverAdminLoginPassword": "[concat('P', uniqueString(resourceGroup().id, deployment().name, '224F5A8B-51DB-46A3-A7C8-59B0DD584A41'), 'x', '!')]",
-    "databaseName": "openactive",
+    "databaseName": "[concat('openactive-proxy-', parameters('resourcePostfix'))]",
     "functionAppName": "[concat(parameters('endpointSubdomain'), '-openactive')]",
-    "storageAccountName": "[concat('functions-storage', variables('resourcePostfix'))]",
+    "storageAccountName": "[concat('openactive', uniqueString(resourceGroup().id))]",
     "computeMode": "[if(equals(parameters('scaling'),'Dynamic'), 'Dynamic', 'Shared')]",
     "sku": "[if(equals(parameters('scaling'),'Dynamic'), 'Dynamic', 'Standard')]",
     "alwaysOn": "[if(equals(parameters('scaling'),'Dynamic'), 'false', 'true')]",
@@ -97,10 +104,10 @@
             "[variables('sqlserverName')]"
           ],
           "properties": {
-            "edition": "Basic",
+            "edition": "Standard",
             "collation": "SQL_Latin1_General_CP1_CI_AS",
-            "maxSizeBytes": "1073741824",
-            "requestedServiceObjectiveName": "Basic"
+            "maxSizeBytes": "5368709120",
+            "requestedServiceObjectiveName": "S1"
           }
         },
         {
@@ -168,9 +175,7 @@
             "requiresSession": "false",
             "defaultMessageTimeToLive": "P14D",
             "deadLetteringOnMessageExpiration": "false",
-            "duplicateDetectionHistoryTimeWindow": "PT10M",
             "maxDeliveryCount": "10",
-            "autoDeleteOnIdle": "P14D",
             "enablePartitioning": "false",
             "enableExpress": "false"
           }
@@ -191,7 +196,6 @@
             "defaultMessageTimeToLive": "P14D",
             "deadLetteringOnMessageExpiration": "true",
             "maxDeliveryCount": "10",
-            "autoDeleteOnIdle": "P14D",
             "enablePartitioning": "false",
             "enableExpress": "false",
             "forwardDeadLetteredMessagesTo": "[variables('serviceBusQueueNamePurge')]"
@@ -212,7 +216,6 @@
             "defaultMessageTimeToLive": "P1D",
             "deadLetteringOnMessageExpiration": "false",
             "maxDeliveryCount": "10",
-            "autoDeleteOnIdle": "P1D",
             "enablePartitioning": "false",
             "enableExpress": "false"
           }
@@ -316,9 +319,9 @@
 
   ],
   "outputs": {
-    "siteUri": {
+    "azureProxyHost": {
       "type": "string",
-      "value": "[concat(reference(concat('Microsoft.Web/sites/', variables('functionAppName'))).hostnames[0],'/api/sessions')]"
+      "value": "[concat(reference(concat('Microsoft.Web/sites/', variables('functionAppName'))).hostnames[0],'/')]"
     },
     "sqlSvrFqdn": {
       "type": "string",
