@@ -304,10 +304,6 @@
             {
               "name": "APPINSIGHTS_INSTRUMENTATIONKEY",
               "value": "[reference(concat('microsoft.insights/components/', variables('appInsightsServiceName'))).InstrumentationKey]"
-            },
-            {
-              "name": "AzureWebJobsSecretStorageType",
-              "value": "files"
             }
           ]
         }
