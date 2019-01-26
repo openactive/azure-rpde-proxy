@@ -56,7 +56,7 @@
     }
   },
   "variables": {
-    "resourcePostfix": "[uniqueString(resourceGroup().id)]",
+    "resourcePostfix": "openactive-rpde-proxy-[uniqueString(resourceGroup().id)]",
     "serviceBusNamespaceName": "[concat('servicebus', variables('resourcePostfix'))]",
     "hostingPlanName": "[concat('hostingplan', variables('resourcePostfix'))]",
     "sqlserverName": "[concat('sqlserver', variables('resourcePostfix'))]",
