@@ -49,6 +49,9 @@ namespace AzureRpdeProxy
             RpdeFeed data = null;
             try
             {
+                var sw = new Stopwatch();
+                sw.Start();
+
                 var result = await httpClient.GetAsync(feedStateItem.nextUrl);
                 if (result.StatusCode == HttpStatusCode.Unauthorized)
                 {
@@ -60,7 +63,11 @@ namespace AzureRpdeProxy
                 {
                     data = JsonConvert.DeserializeObject<RpdeFeed>(await result.Content.ReadAsStringAsync());
                 }
-            } catch (Exception ex)
+
+                sw.Stop();
+                log.LogWarning($"FETCH TIMER {feedStateItem.name}: {sw.ElapsedMilliseconds} ms to fetch {data?.items?.Count ?? 0} items.");
+            }
+            catch (Exception ex)
             {
                 log.LogError(ex, "Error retrieving page: " + feedStateItem.nextUrl);
             }
@@ -86,7 +93,8 @@ namespace AzureRpdeProxy
                             NullValueHandling = NullValueHandling.Ignore
                         }),
                         kind = item.kind,
-                        source = feedStateItem.name
+                        source = feedStateItem.name,
+                        expiry = item.state == "deleted" ? DateTime.UtcNow.AddDays(feedStateItem.deletedItemDaysToLive) : (DateTime?)null
                     }).ToList();
 
                     feedStateItem.totalPagesRead++;
@@ -113,9 +121,10 @@ namespace AzureRpdeProxy
                                 table.Columns.Add("kind", typeof(string));
                                 table.Columns.Add("deleted", typeof(bool));
                                 table.Columns.Add("data", typeof(string));
+                                table.Columns.Add("expiry", typeof(DateTime));
                                 foreach (var item in cacheItems)
                                 {
-                                    table.Rows.Add(item.source, item.id, item.modified, item.kind, item.deleted, item.data);
+                                    table.Rows.Add(item.source, item.id, item.modified, item.kind, item.deleted, item.data, item.expiry);
                                 }
 
                                 SqlCommand cmd = new SqlCommand("UPDATE_ITEM_BATCH", connection);
@@ -130,8 +139,7 @@ namespace AzureRpdeProxy
                                         Value = table,
                                     });
 
-                                int timeInMs = await cmd.ExecuteNonQueryAsync();
-                                log.LogWarning($"POLL TIMER {feedStateItem.name} (internal): {timeInMs} ms to import {cacheItems.Count} items.");
+                                await cmd.ExecuteNonQueryAsync();
                             }
                         }
                         else
@@ -185,7 +193,7 @@ namespace AzureRpdeProxy
                 else
                 {
                     feedStateItem.pollRetries = 0;
-                    delaySeconds = 8;
+                    delaySeconds = feedStateItem.recommendedPollInterval;
                 }
             }
             else

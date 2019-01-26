@@ -41,6 +41,8 @@ namespace AzureRpdeProxy
 
         public bool idIsNumeric { get; set; } = false;
         public Guid id { get; set; } = Guid.NewGuid();
+        public int deletedItemDaysToLive { get; set; } = 7; // 7 days is RPDE spec recommendation
+        public int recommendedPollInterval { get; set; } = 10;
 
         public void ResetCounters()
         {
@@ -99,5 +101,7 @@ namespace AzureRpdeProxy
         public bool deleted { get; set; }
         [SerializedColumn("data")]
         public dynamic data { get; set; }
+        [Column("expiry")]
+        public DateTime? expiry { get; set; }
     }
 }

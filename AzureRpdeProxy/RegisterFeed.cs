@@ -106,7 +106,9 @@ namespace AzureRpdeProxy
                     nextUrl = registrationRequest.url,
                     dateCreated = DateTime.UtcNow,
                     datasetUrl = registrationRequest.datasetUrl,
-                    idIsNumeric = registrationRequest.idIsNumeric
+                    idIsNumeric = registrationRequest.idIsNumeric,
+                    recommendedPollInterval = registrationRequest.recommendedPollInterval,
+                    deletedItemDaysToLive = registrationRequest.deletedItemDaysToLive
                 });
             }
 
@@ -149,5 +151,7 @@ namespace AzureRpdeProxy
         public string url { get; set; }
         public string datasetUrl { get; set; }
         public bool idIsNumeric { get; set; } = false;
+        public int deletedItemDaysToLive { get; set; } = 7;  // 7 days is RPDE spec recommendation
+        public int recommendedPollInterval { get; set; } = 10;
     }
 }
