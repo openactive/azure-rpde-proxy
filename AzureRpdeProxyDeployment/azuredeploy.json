@@ -1,54 +1,10 @@
 {
-  "$schema": "http://schemas.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
+  "$schema": "http://schema.management.azure.com/schemas/2015-01-01/deploymentTemplate.json#",
   "contentVersion": "1.0.0.0",
   "parameters": {
-    "appName": {
-      "type": "string",
-      "metadata": {
-        "description": "The name of the function app that you wish to create."
-      }
-    },
-    "sku": {
-      "type": "string",
-      "allowedValues": [
-        "Free",
-        "Shared",
-        "Basic",
-        "Standard"
-      ],
-      "defaultValue": "Standard",
-      "metadata": {
-        "description": "The pricing tier for the hosting plan."
-      }
-    },
-    "workerSize": {
-      "type": "string",
-      "allowedValues": [
-        "0",
-        "1",
-        "2"
-      ],
-      "defaultValue": "0",
-      "metadata": {
-        "description": "The instance size of the hosting plan (small, medium, or large)."
-      }
-    },
-    "storageAccountType": {
-      "type": "string",
-      "defaultValue": "Standard_LRS",
-      "allowedValues": [
-        "Standard_LRS",
-        "Standard_GRS",
-        "Standard_ZRS",
-        "Premium_LRS"
-      ],
-      "metadata": {
-        "description": "Storage Account type"
-      }
-    },
     "repoURL": {
       "type": "string",
-      "defaultValue": "https://github.com/AzureBytes/functionshttpecho.git",
+      "defaultValue": "https://github.com/openactive/azure-rpde-proxy.git",
       "metadata": {
         "description": "The URL for the GitHub repository that contains the project to deploy."
       }
@@ -62,26 +18,206 @@
     },
     "location": {
       "type": "string",
-      "defaultValue": "[resourceGroup().location]",
+      "allowedValues": [
+        "UK South",
+        "UK West",
+        "North Europe",
+        "West Europe"
+      ],
+      "defaultValue": "UK South",
       "metadata": {
         "description": "Location for all resources."
+      }
+    },
+    "endpointSubdomain": {
+      "type": "string",
+      "defaultValue": "fusion-lifestyle",
+      "metadata": {
+        "description": "Subdomain used in the web address of the OpenActive endpoint: https://<subdomain>-openactive.azurewebsites.net/api/sessions"
+      }
+    },
+    "feedBaseUrl": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Image URL prefix, to be prepended to any image URL returned."
+      }
+    },
+    "scaling": {
+      "type": "string",
+      "allowedValues": [
+        "Dynamic",
+        "Static"
+      ],
+      "defaultValue": "Dynamic",
+      "metadata": {
+        "description": "Scaling approach for functions"
       }
     }
   },
   "variables": {
-    "functionAppName": "[parameters('appName')]",
-    "hostingPlanName": "[concat(parameters('appName'), '-plan')]",
-    "storageAccountName": "[concat(uniquestring(resourceGroup().id), 'functions')]"
+    "resourcePostfix": "[uniqueString(resourceGroup().id)]",
+    "serviceBusNamespaceName": "[concat('servicebus', variables('resourcePostfix'))]",
+    "hostingPlanName": "[concat('hostingplan', variables('resourcePostfix'))]",
+    "sqlserverName": "[concat('sqlserver', variables('resourcePostfix'))]",
+    "sqlserverAdminLogin": "[concat('l', uniqueString(resourceGroup().id, '9A08DDB9-95A1-495F-9263-D89738ED4205'))]",
+    "sqlserverAdminLoginPassword": "[concat('P', uniqueString(resourceGroup().id, deployment().name, '224F5A8B-51DB-46A3-A7C8-59B0DD584A41'), 'x', '!')]",
+    "databaseName": "openactive",
+    "functionAppName": "[concat(parameters('endpointSubdomain'), '-openactive')]",
+    "storageAccountName": "[concat('functions-storage', variables('resourcePostfix'))]",
+    "computeMode": "[if(equals(parameters('scaling'),'Dynamic'), 'Dynamic', 'Shared')]",
+    "sku": "[if(equals(parameters('scaling'),'Dynamic'), 'Dynamic', 'Standard')]",
+    "alwaysOn": "[if(equals(parameters('scaling'),'Dynamic'), 'false', 'true')]",
+    "defaultSASKeyName": "RootManageSharedAccessKey",
+    "authRuleResourceId": "[resourceId('Microsoft.ServiceBus/namespaces/authorizationRules', variables('serviceBusNamespaceName'), variables('defaultSASKeyName'))]",
+    "serviceBusQueueNamePurge": "purge",
+    "serviceBusQueueNameFeedstate": "feedstate",
+    "serviceBusQueueNameRegistration": "registration"
   },
   "resources": [
+    {
+      "apiVersion": "2014-04-01",
+      "location": "[parameters('location')]",
+      "name": "[variables('sqlserverName')]",
+      "properties": {
+        "administratorLogin": "[variables('sqlserverAdminLogin')]",
+        "administratorLoginPassword": "[variables('sqlserverAdminLoginPassword')]",
+        "version": "12.0"
+      },
+      "resources": [
+        {
+          "name": "[variables('databaseName')]",
+          "type": "databases",
+          "location": "[parameters('location')]",
+          "tags": {
+            "displayName": "Database"
+          },
+          "apiVersion": "2015-01-01",
+          "dependsOn": [
+            "[variables('sqlserverName')]"
+          ],
+          "properties": {
+            "edition": "Basic",
+            "collation": "SQL_Latin1_General_CP1_CI_AS",
+            "maxSizeBytes": "1073741824",
+            "requestedServiceObjectiveName": "Basic"
+          }
+        },
+        {
+          "type": "firewallrules",
+          "apiVersion": "2014-04-01",
+          "dependsOn": [
+            "[variables('sqlserverName')]"
+          ],
+          "location": "[parameters('location')]",
+          "name": "AllowAllWindowsAzureIps",
+          "properties": {
+            "endIpAddress": "0.0.0.0",
+            "startIpAddress": "0.0.0.0"
+          }
+        },
+        {
+          "type": "firewallrules",
+          "apiVersion": "2014-04-01",
+          "dependsOn": [
+            "[variables('sqlserverName')]"
+          ],
+          "location": "[parameters('location')]",
+          "name": "AllowDebugSQLServerIP",
+          "properties": {
+            "endIpAddress": "255.255.255.255",
+            "startIpAddress": "0.0.0.0"
+          }
+        }
+      ],
+      "tags": {
+        "displayName": "SqlServer"
+      },
+      "type": "Microsoft.Sql/servers"
+    },
     {
       "type": "Microsoft.Storage/storageAccounts",
       "name": "[variables('storageAccountName')]",
       "apiVersion": "2015-06-15",
       "location": "[parameters('location')]",
       "properties": {
-        "accountType": "[parameters('storageAccountType')]"
+        "accountType": "Standard_LRS"
       }
+    },
+    {
+      "apiVersion": "2017-04-01",
+      "name": "[variables('serviceBusNamespaceName')]",
+      "type": "Microsoft.ServiceBus/namespaces",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Basic"
+      },
+      "properties": {},
+      "resources": [
+        {
+          "apiVersion": "2017-04-01",
+          "name": "[variables('serviceBusQueueNamePurge')]",
+          "type": "Queues",
+          "dependsOn": [
+            "[concat('Microsoft.ServiceBus/namespaces/', variables('serviceBusNamespaceName'))]"
+          ],
+          "properties": {
+            "lockDuration": "PT1M",
+            "maxSizeInMegabytes": "1024",
+            "requiresDuplicateDetection": "false",
+            "requiresSession": "false",
+            "defaultMessageTimeToLive": "P14D",
+            "deadLetteringOnMessageExpiration": "false",
+            "duplicateDetectionHistoryTimeWindow": "PT10M",
+            "maxDeliveryCount": "10",
+            "autoDeleteOnIdle": "P14D",
+            "enablePartitioning": "false",
+            "enableExpress": "false"
+          }
+        },
+        {
+          "apiVersion": "2017-04-01",
+          "name": "[variables('serviceBusQueueNameFeedstate')]",
+          "type": "Queues",
+          "dependsOn": [
+            "[concat('Microsoft.ServiceBus/namespaces/', variables('serviceBusNamespaceName'))]",
+            "[concat(concat('Microsoft.ServiceBus/namespaces/', variables('serviceBusNamespaceName')), concat('/Queues/', variables('serviceBusQueueNamePurge')))]"
+          ],
+          "properties": {
+            "lockDuration": "PT1M",
+            "maxSizeInMegabytes": "1024",
+            "requiresDuplicateDetection": "false",
+            "requiresSession": "false",
+            "defaultMessageTimeToLive": "P14D",
+            "deadLetteringOnMessageExpiration": "true",
+            "maxDeliveryCount": "10",
+            "autoDeleteOnIdle": "P14D",
+            "enablePartitioning": "false",
+            "enableExpress": "false",
+            "forwardDeadLetteredMessagesTo": "[variables('serviceBusQueueNamePurge')]"
+          }
+        },
+        {
+          "apiVersion": "2017-04-01",
+          "name": "[variables('serviceBusQueueNameRegistration')]",
+          "type": "Queues",
+          "dependsOn": [
+            "[concat('Microsoft.ServiceBus/namespaces/', variables('serviceBusNamespaceName'))]"
+          ],
+          "properties": {
+            "lockDuration": "PT1M",
+            "maxSizeInMegabytes": "1024",
+            "requiresDuplicateDetection": "false",
+            "requiresSession": "false",
+            "defaultMessageTimeToLive": "P1D",
+            "deadLetteringOnMessageExpiration": "false",
+            "maxDeliveryCount": "10",
+            "autoDeleteOnIdle": "P1D",
+            "enablePartitioning": "false",
+            "enableExpress": "false"
+          }
+        }
+      ]
     },
     {
       "type": "Microsoft.Web/serverfarms",
@@ -90,10 +226,8 @@
       "location": "[parameters('location')]",
       "properties": {
         "name": "[variables('hostingPlanName')]",
-        "sku": "[parameters('sku')]",
-        "workerSize": "[parameters('workerSize')]",
-        "hostingEnvironment": "",
-        "numberOfWorkers": 1
+        "computeMode": "[variables('computeMode')]",
+        "sku": "[variables('sku')]"
       }
     },
     {
@@ -108,24 +242,53 @@
         "hostingEnvironment": "",
         "clientAffinityEnabled": false,
         "siteConfig": {
-          "alwaysOn": true,
           "cors": {
             "allowedOrigins": [
               "*"
-            ]
+            ],
+            "alwaysOn": "[variables('alwaysOn')]"
           },
+          "use32BitWorkerProcess": false,
           "appSettings": [
             {
-              "name": "FUNCTIONS_EXTENSION_VERSION",
-              "value": "~1"
+              "name": "AzureWebJobsDashboard",
+              "value": "[concat('DefaultEndpointsProtocol=https;AccountName=', variables('storageAccountName'), ';AccountKey=', listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName')),'2015-05-01-preview').key1)]"
             },
             {
               "name": "AzureWebJobsStorage",
-              "value": "[concat('DefaultEndpointsProtocol=https;AccountName=',variables('storageAccountName'),';AccountKey=',listkeys(resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName')), '2015-05-01-preview').key1,';')]"
+              "value": "[concat('DefaultEndpointsProtocol=https;AccountName=', variables('storageAccountName'), ';AccountKey=', listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName')),'2015-05-01-preview').key1)]"
             },
             {
-              "name": "AzureWebJobsDashboard",
-              "value": "[concat('DefaultEndpointsProtocol=https;AccountName=',variables('storageAccountName'),';AccountKey=',listkeys(resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName')), '2015-05-01-preview').key1,';')]"
+              "name": "WEBSITE_CONTENTAZUREFILECONNECTIONSTRING",
+              "value": "[concat('DefaultEndpointsProtocol=https;AccountName=', variables('storageAccountName'), ';AccountKey=', listKeys(resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName')),'2015-05-01-preview').key1)]"
+            },
+            {
+              "name": "WEBSITE_CONTENTSHARE",
+              "value": "[toLower(variables('functionAppName'))]"
+            },
+            {
+              "name": "FUNCTIONS_EXTENSION_VERSION",
+              "value": "~2"
+            },
+            {
+              "name": "ClearProxyCache",
+              "value": "false"
+            },
+            {
+              "name": "FeedBaseUrl",
+              "value": "[parameters('feedBaseUrl')]"
+            },
+            {
+              "name": "SqlServerConnection",
+              "value": "[concat('Server=tcp:', reference(concat('Microsoft.Sql/servers/', variables('sqlserverName'))).fullyQualifiedDomainName, ',1433;Initial Catalog=', variables('databaseName'), ';Persist Security Info=False;User ID=', variables('sqlserverAdminLogin'), '@', reference(concat('Microsoft.Sql/servers/', variables('sqlserverName'))).fullyQualifiedDomainName, ';Password=', variables('sqlserverAdminLoginPassword'), ';MultipleActiveResultSets=False;Encrypt=True;TrustServerCertificate=False;Connection Timeout=30;')]"
+            },
+            {
+              "name": "ServiceBusConnection",
+              "value": "[listkeys(variables('authRuleResourceId'), '2017-04-01').primaryConnectionString]"
+            },
+            {
+              "name": "Project",
+              "value": "AzureRpdeProxy"
             }
           ]
         }
@@ -150,5 +313,24 @@
         }
       ]
     }
-  ]
+
+  ],
+  "outputs": {
+    "siteUri": {
+      "type": "string",
+      "value": "[concat(reference(concat('Microsoft.Web/sites/', variables('functionAppName'))).hostnames[0],'/api/sessions')]"
+    },
+    "sqlSvrFqdn": {
+      "type": "string",
+      "value": "[reference(concat('Microsoft.Sql/servers/', variables('sqlserverName'))).fullyQualifiedDomainName]"
+    },
+    "sqlServerUsername": {
+      "type": "string",
+      "value": "[variables('sqlserverAdminLogin')]"
+    },
+    "sqlServerPassword": {
+      "type": "string",
+      "value": "[variables('sqlserverAdminLoginPassword')]"
+    }
+  }
 }
