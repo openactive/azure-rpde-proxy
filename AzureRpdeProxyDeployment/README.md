@@ -13,20 +13,29 @@
 
 ## Overview
 
-This template deploys a Function App hosted in a new dedicated App Service Plan. The Function App has a child resource that enables continous integration and deploys the function code from a GitHub repository.
+This template deploys the Azure RPDE Proxy Function App and links it to continous integration, to allow updates to be deployed from this GitHub repository.
 
 This template deploys the following resources:
 
-- App Service plan
 - Storage Account
 - Function App
     - App Settings Configuration
     - Source Control Deployment
+- Service Bus
+	- 3 queues
+- Azure SQL Server
+	- Azure SQL Database
+- App Service plan
 
-## Azure Functions
+## Deploy Steps:
 
-> Azure functions is a solution for easily running small pieces of code, or "functions," in the cloud. You can write just the code you need for the problem at hand, without worrying about a whole application or the infrastructure to run it. For more information about Azure Functions, see the [Azure Functions Overview](https://azure.microsoft.com/en-us/documentation/articles/functions-overview/).
+- Deploy this repository to Azure: 
+<a href="https://azuredeploy.net/" target="_blank">
+    <img src="http://azuredeploy.net/deploybutton.png"/>
+</a>
 
-## Miscellaneous
+- Connect to the database using the credentials in the Deployment output within the Azure portal, and run database.sql.
 
-``Tags: app-service, function, github``
+- The AzureProxyRegistrationKey can be found in the configuration of the Registration function, as the default function key.
+
+- The status endpoint can be accessed using the default function key of the Status function.

@@ -58,6 +58,7 @@
   "variables": {
     "resourcePostfix": "[concat('openactive-proxy-', parameters('resourcePostfix'), '-', uniqueString(resourceGroup().id))]",
     "serviceBusNamespaceName": "[concat('servicebus', '-', variables('resourcePostfix'))]",
+    "appInsightsServiceName": "[concat('appinsights', '-', variables('resourcePostfix'))]",
     "hostingPlanName": "[concat('hostingplan', '-', variables('resourcePostfix'))]",
     "sqlserverName": "[concat('sqlserver', '-', variables('resourcePostfix'))]",
     "sqlserverAdminLogin": "[concat('l', uniqueString(resourceGroup().id, '9A08DDB9-95A1-495F-9263-D89738ED4205'))]",
@@ -73,7 +74,9 @@
     "authRuleResourceId": "[resourceId('Microsoft.ServiceBus/namespaces/authorizationRules', variables('serviceBusNamespaceName'), variables('defaultSASKeyName'))]",
     "serviceBusQueueNamePurge": "purge",
     "serviceBusQueueNameFeedstate": "feedstate",
-    "serviceBusQueueNameRegistration": "registration"
+    "serviceBusQueueNameRegistration": "registration",
+    "functionNameRegistration": "Registration",
+    "functionNameStatus": "Status"
   },
   "resources": [
     {
@@ -179,8 +182,7 @@
           "name": "[variables('serviceBusQueueNameFeedstate')]",
           "type": "Queues",
           "dependsOn": [
-            "[concat('Microsoft.ServiceBus/namespaces/', variables('serviceBusNamespaceName'))]",
-            "[concat(concat('Microsoft.ServiceBus/namespaces/', variables('serviceBusNamespaceName')), concat('/Queues/', variables('serviceBusQueueNamePurge')))]"
+            "[concat('Microsoft.ServiceBus/namespaces/', variables('serviceBusNamespaceName'))]"
           ],
           "properties": {
             "lockDuration": "PT1M",
@@ -191,8 +193,7 @@
             "deadLetteringOnMessageExpiration": "true",
             "maxDeliveryCount": "10",
             "enablePartitioning": "false",
-            "enableExpress": "false",
-            "forwardDeadLetteredMessagesTo": "[variables('serviceBusQueueNamePurge')]"
+            "enableExpress": "false"
           }
         },
         {
@@ -215,6 +216,19 @@
           }
         }
       ]
+    },
+    {
+      "type": "microsoft.insights/components",
+      "kind": "other",
+      "name": "[variables('appInsightsServiceName')]",
+      "apiVersion": "2014-04-01",
+      "location": "West Europe",
+      "tags": {},
+      "scale": null,
+      "properties": {
+        "ApplicationId": "[variables('appInsightsServiceName')]"
+      },
+      "dependsOn": []
     },
     {
       "type": "Microsoft.Web/serverfarms",
@@ -286,13 +300,22 @@
             {
               "name": "Project",
               "value": "AzureRpdeProxy"
+            },
+            {
+              "name": "APPINSIGHTS_INSTRUMENTATIONKEY",
+              "value": "[reference(concat('microsoft.insights/components/', variables('appInsightsServiceName'))).InstrumentationKey]"
+            },
+            {
+              "name": "AzureWebJobsSecretStorageType",
+              "value": "files"
             }
           ]
         }
       },
       "dependsOn": [
         "[resourceId('Microsoft.Web/serverfarms', variables('hostingPlanName'))]",
-        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]"
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]",
+        "[resourceId('microsoft.insights/components', variables('appInsightsServiceName'))]"
       ],
       "resources": [
         {
@@ -315,9 +338,9 @@
   "outputs": {
     "azureProxyHost": {
       "type": "string",
-      "value": "[concat(reference(concat('Microsoft.Web/sites/', variables('functionAppName'))).hostnames[0],'/')]"
+      "value": "[concat('https://',reference(concat('Microsoft.Web/sites/', variables('functionAppName'))).hostnames[0],'/')]"
     },
-    "sqlSvrFqdn": {
+    "sqlServerFqdn": {
       "type": "string",
       "value": "[reference(concat('Microsoft.Sql/servers/', variables('sqlserverName'))).fullyQualifiedDomainName]"
     },
