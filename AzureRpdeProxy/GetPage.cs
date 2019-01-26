@@ -16,6 +16,8 @@ using System.Data.SqlClient;
 using System.Diagnostics;
 using System.Data;
 using System.Web;
+using Microsoft.AspNetCore.Mvc;
+using System.Net.Http.Headers;
 
 namespace AzureRpdeProxy
 {
@@ -42,13 +44,13 @@ namespace AzureRpdeProxy
             }
             string afterId = req.Query["afterId"];
 
-            var items = new List<RpdeItem>();
             try
             {
                 var sw = new Stopwatch();
                 sw.Start();
 
                 StringBuilder str = new StringBuilder();
+                int itemCount = 0;
                 using (SqlConnection connection = new SqlConnection(SqlUtils.SqlDatabaseConnectionString))
                 {
                     SqlCommand cmd = new SqlCommand("READ_ITEM_PAGE", connection);
@@ -80,6 +82,8 @@ namespace AzureRpdeProxy
 
                     SqlDataReader reader = await cmd.ExecuteReaderAsync();
 
+                    // Construct using string concatenation instead of deserialisation for maximum efficiency
+
                     // Call Read before accessing data.
                     if (await reader.ReadAsync())
                     {
@@ -92,6 +96,7 @@ namespace AzureRpdeProxy
                             // Get the last item values for the next URL
                             afterTimestamp = reader.GetInt64((int)ResultColumns.modified);
                             afterId = reader.GetString((int)ResultColumns.id);
+                            itemCount++;
                             while (await reader.ReadAsync())
                             {
                                 str.Append(",");
@@ -99,6 +104,7 @@ namespace AzureRpdeProxy
                                 // Get the last item values for the next URL
                                 afterTimestamp = reader.GetInt64((int)ResultColumns.modified);
                                 afterId = reader.GetString((int)ResultColumns.id);
+                                itemCount++;
                             }
                         }
                         str.Append("],\"license\":");
@@ -120,7 +126,8 @@ namespace AzureRpdeProxy
                 }
 
                 // Create response
-                var resp = req.CreateJSONResponseFromString(HttpStatusCode.OK, str.ToString());
+                var resp = req.CreateCachableJSONResponseFromString(str.ToString(),
+                    itemCount > 0 ? TimeSpan.FromHours(1) : TimeSpan.FromSeconds(10));
 
                 sw.Stop();
 
@@ -212,10 +219,16 @@ namespace AzureRpdeProxy
             });
         }
 
-        public static HttpResponseMessage CreateCachableJSONResponse(this HttpRequest req, object o, int seconds)
+        public static HttpResponseMessage CreateCachableJSONResponseFromString(this HttpRequest request, string jsonString, TimeSpan cacheMaxAge)
         {
-            var resp = req.CreateJSONResponse(HttpStatusCode.OK, o);
-            // TODO: Add cache headers / Cache middleware
+            var resp = request.CreateJSONResponseFromString(HttpStatusCode.OK, jsonString);
+  
+            resp.Headers.CacheControl = new CacheControlHeaderValue()
+            {
+                Public = true,
+                MaxAge = cacheMaxAge
+            };
+
             return resp;
         }
 
@@ -245,7 +258,6 @@ namespace AzureRpdeProxy
             HttpRequestMessage req = request.HttpContext.GetHttpRequestMessage();
 
             var resp = req.CreateResponse(statusCode);
-
             resp.Content = new StringContent(jsonString, Encoding.UTF8, "application/json");
             return resp;
         }
