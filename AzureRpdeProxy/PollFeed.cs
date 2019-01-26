@@ -1,6 +1,3 @@
-using Microsoft.Azure.CosmosDB.BulkExecutor;
-using Microsoft.Azure.CosmosDB.BulkExecutor.BulkImport;
-using Microsoft.Azure.Documents.Client;
 using Microsoft.Azure.ServiceBus;
 using Microsoft.Azure.ServiceBus.Core;
 using Microsoft.Azure.WebJobs;
@@ -8,9 +5,14 @@ using Microsoft.Azure.WebJobs.Host;
 using Microsoft.Azure.WebJobs.ServiceBus;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
+using NPoco;
 using System;
+using System.Configuration;
+using System.Data;
+using System.Data.SqlClient;
 using System.Diagnostics;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Numerics;
 using System.Threading.Tasks;
@@ -28,40 +30,9 @@ namespace AzureRpdeProxy
             httpClient = new HttpClient();
         }
 
-        private static async Task<IBulkExecutor> InitializeBulkExecutor (DocumentClient client)
-        {
-            client.ConnectionPolicy.ConnectionMode = ConnectionMode.Direct;
-            client.ConnectionPolicy.ConnectionProtocol = Protocol.Tcp;
-
-            // Set retry options high during initialization (default values).
-            client.ConnectionPolicy.RetryOptions.MaxRetryWaitTimeInSeconds = 30;
-            client.ConnectionPolicy.RetryOptions.MaxRetryAttemptsOnThrottledRequests = 9;
-
-            var dataCollection =  client.CreateDocumentCollectionQuery(UriFactory.CreateDatabaseUri("openactive"))
-                .Where(c => c.Id == "Items").AsEnumerable().FirstOrDefault();
-
-            IBulkExecutor bulkExecutor = new BulkExecutor(client, dataCollection);
-            await bulkExecutor.InitializeAsync();
-
-            // Set retries to 0 to pass complete control to bulk executor.
-            client.ConnectionPolicy.RetryOptions.MaxRetryWaitTimeInSeconds = 0;
-            client.ConnectionPolicy.RetryOptions.MaxRetryAttemptsOnThrottledRequests = 0;
-
-            return bulkExecutor;
-        }
-
         [FunctionName("PollFeed")]
         public static async Task Run([ServiceBusTrigger(Utils.QUEUE_NAME, Connection = "ServiceBusConnection")] Message message, MessageReceiver messageReceiver, string lockToken,
             [ServiceBus(Utils.QUEUE_NAME, Connection = "ServiceBusConnection", EntityType = EntityType.Queue)] IAsyncCollector<Message> queueCollector,
-            [CosmosDB(
-                databaseName: "openactive",
-                collectionName: "Items",
-                ConnectionStringSetting = "CosmosDBConnection")] DocumentClient client,
-            [CosmosDB(
-                databaseName: "openactive",
-                collectionName: "Items",
-                ConnectionStringSetting = "CosmosDBConnection")]
-                IAsyncCollector<CachedRpdeItem> itemsOut,
              ILogger log)
         {
             var feedStateItem = FeedState.DecodeFromMessage(message);
@@ -72,30 +43,48 @@ namespace AzureRpdeProxy
             feedStateItem.totalPollRequests++;
             feedStateItem.dateModified = DateTime.Now;
 
+            int delaySeconds = 0;
+
             // Attempt to get next page
             RpdeFeed data = null;
             try
             {
-                var result = await httpClient.GetStringAsync(feedStateItem.nextUrl);
-                data = JsonConvert.DeserializeObject<RpdeFeed>(result);
+                var result = await httpClient.GetAsync(feedStateItem.nextUrl);
+                if (result.StatusCode == HttpStatusCode.Unauthorized)
+                {
+                    // Deadletter on 401 (OWS key has changed)
+                    log.LogWarning($"Feed attempting poll returned 401 and will be purged: '{feedStateItem.name}'.");
+                    delaySeconds = -1;
+                }
+                else
+                {
+                    data = JsonConvert.DeserializeObject<RpdeFeed>(await result.Content.ReadAsStringAsync());
+                }
             } catch (Exception ex)
             {
                 log.LogError(ex, "Error retrieving page: " + feedStateItem.nextUrl);
             }
 
-            int delaySeconds;
-
+            if (delaySeconds == -1)
+            {
+                // Do nothing to immediately deadletter this response
+            }
             // check for "license": "https://creativecommons.org/licenses/by/4.0/"
-            if (data?.license == Utils.CC_BY_LICENSE && data?.next != null)
+            else if (data?.license == Utils.CC_BY_LICENSE && data?.next != null)
             {
                 if (data?.items?.Count > 0)
                 {
                     var cacheItems = data?.items.Select(item => new CachedRpdeItem
                     {
-                        id = feedStateItem.idIsNumeric ? ((long)item.id).ToString("D20") : HttpUtility.UrlEncode(item.id),
+                        id = item.id is int || item.id is long ? ((long)item.id).ToString("D20") : HttpUtility.UrlEncode(item.id),
                         modified = item.modified,
                         deleted = item.state == "deleted",
-                        data = item.data,
+                        // Note must be manually serialised to pass to stored procedure, which ignores object annotations
+                        data = JsonConvert.SerializeObject(item, Newtonsoft.Json.Formatting.None,
+                        new JsonSerializerSettings
+                        {
+                            NullValueHandling = NullValueHandling.Ignore
+                        }),
                         kind = item.kind,
                         source = feedStateItem.name
                     }).ToList();
@@ -109,61 +98,102 @@ namespace AzureRpdeProxy
                         var sw = new Stopwatch();
                         sw.Start();
 
-                        string importMethod;
-
-                        // Only use bulkExecutor for large numbers of items, from rough testing 100 seems to be the tipping point to use BulkExecutor
-                        if (cacheItems.Count < 100)
+                        // Batch if more than a few updates
+                        // TODO: Benchmark batch to see if always faster and can always be used
+                        if (true) //cacheItems.Count > 2)
                         {
-                            importMethod = "AddAsync";
-                            foreach (var item in cacheItems)
+                            using (SqlConnection connection = new SqlConnection(SqlUtils.SqlDatabaseConnectionString))
                             {
-                                await itemsOut.AddAsync(item);
+                                connection.Open();
+
+                                DataTable table = new DataTable();
+                                table.Columns.Add("source", typeof(string));
+                                table.Columns.Add("id", typeof(string));
+                                table.Columns.Add("modified", typeof(long));
+                                table.Columns.Add("kind", typeof(string));
+                                table.Columns.Add("deleted", typeof(bool));
+                                table.Columns.Add("data", typeof(string));
+                                foreach (var item in cacheItems)
+                                {
+                                    table.Rows.Add(item.source, item.id, item.modified, item.kind, item.deleted, item.data);
+                                }
+
+                                SqlCommand cmd = new SqlCommand("UPDATE_ITEM_BATCH", connection);
+                                cmd.CommandType = CommandType.StoredProcedure;
+
+                                cmd.Parameters.Add(
+                                    new SqlParameter()
+                                    {
+                                        ParameterName = "@Tvp",
+                                        SqlDbType = SqlDbType.Structured,
+                                        TypeName = "ItemTableType",
+                                        Value = table,
+                                    });
+
+                                int timeInMs = await cmd.ExecuteNonQueryAsync();
+                                log.LogWarning($"POLL TIMER {feedStateItem.name} (internal): {timeInMs} ms to import {cacheItems.Count} items.");
                             }
                         }
                         else
                         {
-                            importMethod = "BulkExecutor";
-                            var bulkExecutor = await InitializeBulkExecutor(client);
-                            BulkImportResponse importStats = await bulkExecutor.BulkImportAsync(
-                              documents: cacheItems,
-                              enableUpsert: true,
-                              disableAutomaticIdGeneration: true,
-                              maxConcurrencyPerPartitionKeyRange: 1,
-                              maxInMemorySortingBatchSize: null);
-
-                            log.LogInformation($"{importStats.NumberOfDocumentsImported} items imported of {cacheItems.Count()} retrieved, using {importStats.TotalRequestUnitsConsumed} RUs in {importStats.TotalTimeTaken}.");
-                            if (importStats.BadInputDocuments?.Count > 0)
+                            using (var db = new Database(SqlUtils.SqlDatabaseConnectionString, DatabaseType.SqlServer2012, SqlClientFactory.Instance))
                             {
-                                log.LogError($"{importStats.BadInputDocuments.Count} items failed to import from URL '{feedStateItem.nextUrl}' of '{feedStateItem.name}'.");
+                                using (var transaction = db.GetTransaction())
+                                {
+                                    foreach (var item in cacheItems)
+                                    {
+                                        db.Execute("UPDATE_ITEM", CommandType.StoredProcedure, item);
+                                    }
+                                    transaction.Complete();
+                                }
                             }
                         }
 
                         sw.Stop();
-                        log.LogInformation($"TIMER for {importMethod}: {sw.ElapsedMilliseconds} ms to import {cacheItems.Count} items.");
+                        log.LogWarning($"POLL TIMER {feedStateItem.name}: {sw.ElapsedMilliseconds} ms to import {cacheItems.Count} items.");
 
                         // TODO: Write items to cosmos, only overwritting when modified is newer
                         // TODO: Count how many updates were actually made, if 0 check to see if there are duplicate messages in the queue and drop the one with the greater GUID (so that they don't both drop themselves) was a duplicate and do not add to the queue
                         // Or compare the max modified of the database with the max modified of the items array, to determine if any modification has happened previous to this?
                         feedStateItem.pollRetries = 0;
                         delaySeconds = 0;
-                    } catch (Exception ex)
+                    }
+                    catch (SqlException ex)
+                    {
+                        if (SqlUtils.SqlTransientErrorNumbers.Contains(ex.Number))
+                        {
+                            log.LogWarning($"Throttle on PollFeed, retry after {SqlUtils.SqlRetrySecondsRecommendation} seconds.");
+                            delaySeconds = SqlUtils.SqlRetrySecondsRecommendation;
+                            feedStateItem.pollRetries = 0;
+                        }
+                        else
+                        {
+                            feedStateItem.pollRetries++;
+                            feedStateItem.totalErrors++;
+                            delaySeconds = (int)BigInteger.Pow(2, feedStateItem.pollRetries);
+                            log.LogWarning($"Error writing page to SQL Server {ex.Number}: Retrying '{feedStateItem.name}' attempt {feedStateItem.pollRetries} in {delaySeconds} seconds. Error: " + ex.ToString());
+                        }
+                    }
+                    catch (Exception ex)
                     {
                         feedStateItem.pollRetries++;
                         feedStateItem.totalErrors++;
                         delaySeconds = (int)BigInteger.Pow(2, feedStateItem.pollRetries);
-                        log.LogWarning($"Error writing page to CosmosDB: Retrying '{feedStateItem.name}' attempt {feedStateItem.pollRetries} in {delaySeconds} seconds. Error: " + ex.ToString());
+                        log.LogWarning($"Error writing page to SQL Server: Retrying '{feedStateItem.name}' attempt {feedStateItem.pollRetries} in {delaySeconds} seconds. Error: " + ex.ToString());
                     }
-                } else
+                }
+                else
                 {
                     feedStateItem.pollRetries = 0;
                     delaySeconds = 8;
                 }
-            } else
+            }
+            else
             {
-                if (feedStateItem.pollRetries > 20)
+                if (feedStateItem.pollRetries > 15) // Retry with exponential backoff for 18 hours, then fail and purge regardless of the error type
                 {
                     log.LogError($"Error retrieving page: DEAD-LETTERING '{feedStateItem.name}'");
-                    
+
                     //message.
                     //feedStateItem.DeadLetter("Too many retries", $"ResubmitCount is {resubmitCount}");
                     delaySeconds = -1;
@@ -189,8 +219,8 @@ namespace AzureRpdeProxy
                 // and a reregistration being required to restart it (24 hrs later)
                 //using (var scope = new TransactionScope(TransactionScopeAsyncFlowOption.Enabled))
                 //{
-                    await queueCollector.AddAsync(newMessage);
-                    await messageReceiver.CompleteAsync(lockToken);
+                await messageReceiver.CompleteAsync(lockToken);
+                await queueCollector.AddAsync(newMessage);
                     
                 //    scope.Complete(); // declare the transaction done
                 //}

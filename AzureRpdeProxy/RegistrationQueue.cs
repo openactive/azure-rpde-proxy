@@ -1,5 +1,3 @@
-using Microsoft.Azure.Documents;
-using Microsoft.Azure.Documents.Client;
 using Microsoft.Azure.ServiceBus;
 using Microsoft.Azure.ServiceBus.Core;
 using Microsoft.Azure.WebJobs;
@@ -8,6 +6,7 @@ using Microsoft.Azure.WebJobs.ServiceBus;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
 using System;
+using System.Net;
 using System.Net.Http;
 using System.Threading.Tasks;
 
@@ -40,23 +39,42 @@ namespace AzureRpdeProxy
             // Attempt to get first page
             try
             {
-                var result = await httpClient.GetStringAsync(feedStateItem.url);
-                data = JsonConvert.DeserializeObject(result);
+                var result = await httpClient.GetAsync(feedStateItem.nextUrl);
+                if (result.StatusCode == HttpStatusCode.Unauthorized)
+                {
+                    // Remove from queue on 401 (OWS key has changed)
+                    log.LogWarning($"Feed attempting registration returned 401 and will be dropped: '{feedStateItem.name}'.");
+                    await messageReceiver.CompleteAsync(lockToken);
+                    return;
+                }
+                else
+                {
+                    data = JsonConvert.DeserializeObject<RpdeFeed>(await result.Content.ReadAsStringAsync());
+                }
             }
             catch (Exception ex)
             {
-                log.LogError($"Registration error while validating first page. Error retrieving '{feedStateItem.url}'. {ex.ToString()}");
-                // TODO: Consolidate feed fetch code and make this exponential backoff with a limit of 10 retries
-                await registrationQueueCollector.AddAsync(feedStateItem.EncodeToMessage(10));
-                await messageReceiver.CompleteAsync(lockToken);
+                // Retry registration three times over 30 minutes, then fail
+                if (feedStateItem.pollRetries > 3)
+                {
+                    log.LogError($"Registration error while validating first page. Dropping feed. Error retrieving '{feedStateItem.url}'. {ex.ToString()}");
+                    await messageReceiver.CompleteAsync(lockToken);
+                }
+                else
+                {
+                    feedStateItem.pollRetries++;
+                    feedStateItem.totalErrors++;
+                    log.LogWarning($"Registration error while validating first page. Retrying '{feedStateItem.name}' attempt {feedStateItem.pollRetries}. Error retrieving '{feedStateItem.url}'. {ex.ToString()}");
+                    await messageReceiver.CompleteAsync(lockToken);
+                    await registrationQueueCollector.AddAsync(feedStateItem.EncodeToMessage(30));
+                }
                 return;
             }
 
             // check for "license": "https://creativecommons.org/licenses/by/4.0/"
             if (data?.license != Utils.CC_BY_LICENSE)
             {
-                log.LogError($"Registration error while validating first page. Error retrieving license for '{feedStateItem.url}'.");
-                await registrationQueueCollector.AddAsync(feedStateItem.EncodeToMessage(10));
+                log.LogError($"Registration error while validating first page - dropping feed. Error retrieving license for '{feedStateItem.url}'.");
                 await messageReceiver.CompleteAsync(lockToken);
                 return;
             }
@@ -64,8 +82,10 @@ namespace AzureRpdeProxy
             // Restart the feed from the beginning
             feedStateItem.nextUrl = feedStateItem.url;
 
-            await queueCollector.AddAsync(feedStateItem.EncodeToMessage(0));
+            feedStateItem.ResetCounters();
+
             await messageReceiver.CompleteAsync(lockToken);
+            await queueCollector.AddAsync(feedStateItem.EncodeToMessage(0));
             log.LogInformation($"Registration Trigger Promoting Feed: {feedStateItem.name}");
         }
     }

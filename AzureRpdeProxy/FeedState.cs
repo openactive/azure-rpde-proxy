@@ -1,5 +1,6 @@
 ﻿using Microsoft.Azure.ServiceBus;
 using Newtonsoft.Json;
+using NPoco;
 using System;
 using System.Collections.Generic;
 using System.Text;
@@ -36,7 +37,7 @@ namespace AzureRpdeProxy
         public int pollRetries { get; set; } = 0;
         public int purgeRetries { get; set; } = 0;
         public long purgedItems { get; set; } = 0;
-        public long totalPurgeCount { get; set; } = 0;
+        public long totalPurgeCount { get; set; } = -1;
 
         public bool idIsNumeric { get; set; } = false;
         public Guid id { get; set; } = Guid.NewGuid();
@@ -82,13 +83,21 @@ namespace AzureRpdeProxy
         public dynamic data { get; set; }
     }
 
+    [TableName("items")]
+    [PrimaryKey(new string[2] {"source", "id" }, AutoIncrement = false)]
     public class CachedRpdeItem
     {
-        public string id { get; set; }
-        public long modified { get; set; }
-        public string kind { get; set; }
+        [Column("source")]
         public string source { get; set; }
+        [Column("id")]
+        public string id { get; set; }
+        [Column("modified")]
+        public long modified { get; set; }
+        [Column("kind")]
+        public string kind { get; set; }
+        [Column("deleted")]
         public bool deleted { get; set; }
+        [SerializedColumn("data")]
         public dynamic data { get; set; }
     }
 }

@@ -1,6 +1,6 @@
-﻿using Microsoft.Azure.Documents.Linq;
-using System;
+﻿using System;
 using System.Collections.Generic;
+using System.Configuration;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -10,7 +10,7 @@ namespace AzureRpdeProxy
     class Utils
     {
         public const string CC_BY_LICENSE = "https://creativecommons.org/licenses/by/4.0/";
-        public const string QUEUE_NAME = "feedstate2";
+        public const string QUEUE_NAME = "feedstate";
         public const string PURGE_QUEUE_NAME = "purge";
         public const string REGISTRATION_QUEUE_NAME = "registration";
 
@@ -18,26 +18,21 @@ namespace AzureRpdeProxy
         {
             return Environment.GetEnvironmentVariable("FeedBaseUrl") + "api/feeds/" + name;
         }
-        
     }
 
-    static class Extensions
+    static class SqlUtils
     {
-        public static Task<List<T>> ToListAsync<T>(this IQueryable<T> query) => query.AsDocumentQuery().ToListAsync();
+        // Transient fault error codes
+        // https://docs.microsoft.com/en-us/azure/sql-database/sql-database-develop-error-messages
+        static public List<int> SqlTransientErrorNumbers =
+          new List<int> { 4060, 40197, 40501, 40613, 49918, 49919, 49920, 4221, 11001,
+              10928, 10929, 40544, 40549, 40550, 40551, 40552, 40553 };
 
-        public static async Task<List<T>> ToListAsync<T>(this IDocumentQuery<T> queryable)
-        {
-            var list = new List<T>();
+        // Recommended Azure SQL retry interval
+        // https://blogs.msdn.microsoft.com/psssql/2012/10/30/worker-thread-governance-coming-to-azure-sql-database/
+        static public int SqlRetrySecondsRecommendation = 10;
 
-            while (queryable.HasMoreResults)
-            {
-                //Note that ExecuteNextAsync can return many records in each call
-                var response = await queryable.ExecuteNextAsync<T>();
-                Console.WriteLine($"GetPage Query: {response.RequestCharge} RUs for {response.Count} results");
-                list.AddRange(response);
-            }
-
-            return list;
-        }
+        // TODO: Move this to app settings if allowed by deployment script
+        static public string SqlDatabaseConnectionString = Environment.GetEnvironmentVariable("SqlServerConnection")?.ToString();
     }
 }

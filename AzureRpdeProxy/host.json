@@ -6,5 +6,6 @@
         "autoComplete": false
       }
     }
-  }
+  },
+  "functionTimeout": "00:01:00"
 }

@@ -1,5 +1,3 @@
-using Microsoft.Azure.Documents;
-using Microsoft.Azure.Documents.Client;
 using Microsoft.Azure.ServiceBus;
 using Microsoft.Azure.ServiceBus.Core;
 using Microsoft.Azure.WebJobs;
@@ -23,8 +21,8 @@ namespace AzureRpdeProxy
             // Dead letter queue from PollFeed simply triggers a purge
 
             log.LogInformation($"DeadLetterQueue Trigger Started: {feedStateItem.name}");
-            await queueCollector.AddAsync(feedStateItem.EncodeToMessage(0));
             await messageReceiver.CompleteAsync(lockToken);
+            await queueCollector.AddAsync(feedStateItem.EncodeToMessage(0));
             log.LogInformation($"DeadLetterQueue Trigger Complete: {feedStateItem.name}");
         }
     }
