@@ -55,6 +55,16 @@ END
 
 GO
 
+IF EXISTS ( SELECT * 
+            FROM   sysobjects 
+            WHERE  id = object_id(N'[dbo].[READ_DATASETS]') 
+                   and OBJECTPROPERTY(id, N'IsProcedure') = 1 )
+            BEGIN
+               PRINT '    Dropping stored procedure'
+                        DROP PROCEDURE [dbo].[READ_DATASETS]
+END
+
+GO
 IF OBJECT_ID('[dbo].[feeds]') IS NOT NULL DROP TABLE [dbo].[feeds]
 CREATE TABLE [dbo].[feeds]
 (
