@@ -30,7 +30,7 @@ namespace AzureRpdeProxy
             id = 2
         }
 
-        [FunctionName("GetPage")]
+        [FunctionName("FeedPage")]
         public static async Task<HttpResponseMessage> Run(
             [HttpTrigger(AuthorizationLevel.Anonymous, "get", Route = "feeds/{source}")] HttpRequest req, string source,
             ILogger log)
@@ -80,6 +80,8 @@ namespace AzureRpdeProxy
 
                     connection.Open();
 
+                    // This query will return one additional record (from the previous page) to check that the provided "source" value is valid
+                    // (So even the last page will return at least 1 record)
                     SqlDataReader reader = await cmd.ExecuteReaderAsync();
 
                     // Construct using string concatenation instead of deserialisation for maximum efficiency
@@ -112,6 +114,9 @@ namespace AzureRpdeProxy
                         str.Append("}");
                         // Add next URL to beginning of response
                         str.Insert(0, "{\"next\":" + JsonConvert.ToString($"{Utils.GetFeedUrl(source)}?afterTimestamp={afterTimestamp}&afterId={afterId}"));
+
+                        // Call Close when done reading.
+                        reader.Close();
                     } else
                     {
                         // Call Close when done reading.
@@ -120,81 +125,24 @@ namespace AzureRpdeProxy
                         // Return 404 for invalid source, rather than just for last page
                         return req.CreateErrorResponse(HttpStatusCode.NotFound, $"'{source}' feed not found");
                     }
-
-                    // Call Close when done reading.
-                    reader.Close();
                 }
 
                 // Create response
-                var resp = req.CreateCachableJSONResponseFromString(str.ToString(),
-                    itemCount > 0 ? TimeSpan.FromHours(1) : TimeSpan.FromSeconds(10));
+                var resp = req.CreateJSONResponseFromString(HttpStatusCode.OK, str.ToString())
+                    .AsCachable(itemCount > 0 ? TimeSpan.FromHours(1) : TimeSpan.FromSeconds(10));
 
                 sw.Stop();
 
                 log.LogWarning($"GETPAGE TIMER {sw.ElapsedMilliseconds} ms.");
 
-                // TODO: Add cache headers / Cache middleware
                 return resp;
-                /*
-                using (var db = new Database(SqlUtils.SqlDatabaseConnectionString, DatabaseType.SqlServer2012, SqlClientFactory.Instance))
-                {
-                    var limit = 500;
-                    // This query will return one additional record (from the previous page) to check that the provided "source" value is valid (note >= instead of >)
-                    var whereClause = afterTimestamp > 0 && afterId != null ? " AND ((modified = @1 AND id >= @2) OR (modified > @1))" : "";
-                    var results = await db.QueryAsync<CachedRpdeItem>($"SELECT TOP {limit} u.* from [dbo].[items] u (nolock) WHERE source = @0 {whereClause} ORDER BY modified, id", source, afterTimestamp, afterId);
-                    sw.Stop();
-
-                    // As results are async this will run the ORM deserialisation of the item JSON in parallel 
-                    foreach (var i in results)
-                    {
-                        items.Add(new RpdeItem
-                        {
-                            id = i.id,
-                            modified = i.modified,
-                            kind = i.kind,
-                            state = i.deleted ? "deleted" : "updated",
-                            data = i.data
-                        });
-                    }
-
-                    // Will always be > 0 is if there are any items in the database for the chosen source value, due to additional record included above, assuming the table is not deleted
-                    if (items.Count > 0)
-                    {
-                        if (items[0].id == afterId && items[0].modified == afterTimestamp)
-                        {
-                            items.RemoveAt(0);
-                        }
-
-                        // Check again as the list is now shorter
-                        if (items.Count() > 0)
-                        {
-                            afterTimestamp = items.Last().modified;
-                            afterId = items.Last().id;
-                        }
-
-                        return req.CreateCachableJSONResponse(new RpdeFeed
-                            {
-                                next = $"{Utils.GetFeedUrl(source)}?afterTimestamp={afterTimestamp}&afterId={afterId}",
-                                items = items,
-                                license = Utils.CC_BY_LICENSE
-                            },
-                            items.Count() > 0 ? 3600 : 10 // Recommendation from https://developer.openactive.io/publishing-data/data-feeds/scaling-feeds
-                        );
-                    }
-                    else
-                    {
-                        // Return 404 for invalid source, rather than just for last page
-                        return  req.CreateErrorResponse(HttpStatusCode.NotFound, $"'{source}' feed not found");
-                    }
-                }
-                */
             }
             catch (SqlException ex)
             {
-                if (SqlUtils.SqlTransientErrorNumbers.Contains(ex.Number))
+                if (SqlUtils.SqlTransientErrorNumbers.Contains(ex.Number) || ex.Message.Contains("timeout", StringComparison.InvariantCultureIgnoreCase))
                 {
                     log.LogWarning($"Throttle on GetPage, retry after {SqlUtils.SqlRetrySecondsRecommendation} seconds.");
-                    return req.CreateTooManyRequestsResponse(TimeSpan.FromSeconds(SqlUtils.SqlRetrySecondsRecommendation));// StatusCodeResult((HttpStatusCode)StatusCodes.Status429TooManyRequests, $"Rate Limit Reached. Retry in {ex.RetryAfter.TotalSeconds} seconds.");
+                    return req.CreateTooManyRequestsResponse(TimeSpan.FromSeconds(SqlUtils.SqlRetrySecondsRecommendation));
                 } else
                 {
                     log.LogError("Error during GetPage: " + ex.ToString());
@@ -219,25 +167,19 @@ namespace AzureRpdeProxy
             });
         }
 
-        public static HttpResponseMessage CreateCachableJSONResponseFromString(this HttpRequest request, string jsonString, TimeSpan cacheMaxAge)
+        public static HttpResponseMessage AsCachable(this HttpResponseMessage request, TimeSpan cacheMaxAge)
         {
-            var resp = request.CreateJSONResponseFromString(HttpStatusCode.OK, jsonString);
-  
-            resp.Headers.CacheControl = new CacheControlHeaderValue()
+            request.Headers.CacheControl = new CacheControlHeaderValue()
             {
                 Public = true,
                 MaxAge = cacheMaxAge
             };
 
-            return resp;
+            return request;
         }
 
         public static HttpResponseMessage CreateJSONResponse(this HttpRequest request, HttpStatusCode statusCode, object o)
         {
-            // Note this uses the compatability shim in Microsoft.AspNetCore.Mvc.WebApiCompatShim to get an HttpRequestMessage out of an HttpRequest
-            // It can be removed once this code is fully ported to ASP.NET Core.
-            HttpRequestMessage req = request.HttpContext.GetHttpRequestMessage();
-          
             var e = JsonConvert.SerializeObject(o,
                 Newtonsoft.Json.Formatting.None,
                 new JsonSerializerSettings
@@ -245,9 +187,7 @@ namespace AzureRpdeProxy
                     NullValueHandling = NullValueHandling.Ignore
                 });
 
-            var resp = req.CreateResponse(statusCode);
-
-            resp.Content = new StringContent(e, Encoding.UTF8, "application/json");
+            var resp = request.CreateJSONResponseFromString(statusCode, e);
             return resp;
         }
 

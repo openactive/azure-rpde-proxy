@@ -5,7 +5,9 @@ using Microsoft.Azure.WebJobs.Host;
 using Microsoft.Azure.WebJobs.ServiceBus;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
+using NPoco;
 using System;
+using System.Data.SqlClient;
 using System.Net;
 using System.Net.Http;
 using System.Threading.Tasks;
@@ -24,7 +26,7 @@ namespace AzureRpdeProxy
         [FunctionName("RegistrationQueueHandler")]
         public static async Task Run([ServiceBusTrigger(Utils.REGISTRATION_QUEUE_NAME, Connection = "ServiceBusConnection")] Message message, MessageReceiver messageReceiver, string lockToken,
             [ServiceBus(Utils.REGISTRATION_QUEUE_NAME, Connection = "ServiceBusConnection", EntityType = EntityType.Queue)] IAsyncCollector<Message> registrationQueueCollector,
-            [ServiceBus(Utils.QUEUE_NAME, Connection = "ServiceBusConnection", EntityType = EntityType.Queue)] IAsyncCollector<Message> queueCollector,
+            [ServiceBus(Utils.FEED_STATE_QUEUE_NAME, Connection = "ServiceBusConnection", EntityType = EntityType.Queue)] IAsyncCollector<Message> queueCollector,
             ILogger log)
         {
 
@@ -83,6 +85,18 @@ namespace AzureRpdeProxy
             feedStateItem.nextUrl = feedStateItem.url;
 
             feedStateItem.ResetCounters();
+
+            // Write the successful registration to the feeds table
+            using (var db = new Database(SqlUtils.SqlDatabaseConnectionString, DatabaseType.SqlServer2012, SqlClientFactory.Instance))
+            {
+                db.Save<Feed>(new Feed
+                {
+                    source = feedStateItem.name,
+                    url = feedStateItem.url,
+                    datasetUrl = feedStateItem.datasetUrl,
+                    initialFeedState = feedStateItem
+                });
+            }
 
             await messageReceiver.CompleteAsync(lockToken);
             await queueCollector.AddAsync(feedStateItem.EncodeToMessage(0));

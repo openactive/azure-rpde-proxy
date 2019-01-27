@@ -42,9 +42,7 @@ IF EXISTS ( SELECT *
                         DROP PROCEDURE [dbo].[PRUNE_STALE_ITEMS]
 END
 
-
 GO
-
 
 IF EXISTS ( SELECT * 
             FROM   sysobjects 
@@ -57,6 +55,17 @@ END
 
 GO
 
+IF OBJECT_ID('[dbo].[feeds]') IS NOT NULL DROP TABLE [dbo].[feeds]
+CREATE TABLE [dbo].[feeds]
+(
+	[source] varchar (50) NOT NULL,
+    [url] nvarchar(max) NOT NULL,
+    [datasetUrl] varchar(max) NOT NULL,
+	[initialFeedState] varchar(max) NOT NULL,
+	PRIMARY KEY NONCLUSTERED ([source])
+)
+
+GO
 
 IF OBJECT_ID('[dbo].[items]') IS NOT NULL DROP TABLE [dbo].[items]
 CREATE TABLE [dbo].[items]
@@ -100,6 +109,14 @@ CREATE TYPE ItemTableType AS TABLE
 
 GO
 
+
+CREATE PROCEDURE [dbo].[READ_DATASETS]
+AS
+BEGIN
+	SELECT DISTINCT [datasetUrl] from [dbo].[feeds]
+END
+
+GO
 
 CREATE PROCEDURE [dbo].[UPDATE_ITEM]
 (
@@ -163,7 +180,8 @@ CREATE PROCEDURE [dbo].[READ_ITEM_PAGE]
 )
 AS
 BEGIN
-   SELECT TOP 500 [data], [modified], [id] from [dbo].[items] u WHERE source = @source AND ((modified = @modified AND id >= @id) OR (modified > @modified)) ORDER BY modified, id;
+	-- This query will return one additional record (from the previous page) to check that the provided "source" value is valid (note >= instead of >)
+	SELECT TOP 500 [data], [modified], [id] from [dbo].[items] u WHERE source = @source AND ((modified = @modified AND id >= @id) OR (modified > @modified)) ORDER BY modified, id;
 END
 
 GO

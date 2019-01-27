@@ -10,8 +10,8 @@ namespace AzureRpdeProxy
 {
     public static class PollFeedDeadLetterHandler
     {
-        [FunctionName("PollFeedDeadLetterHandler")]
-        public static async Task Run([ServiceBusTrigger(Utils.QUEUE_NAME + "/$DeadLetterQueue", Connection = "ServiceBusConnection")] Message message, MessageReceiver messageReceiver, string lockToken,
+        [FunctionName("PollQueueDeadLetterHandler")]
+        public static async Task Run([ServiceBusTrigger(Utils.FEED_STATE_QUEUE_NAME + "/$DeadLetterQueue", Connection = "ServiceBusConnection")] Message message, MessageReceiver messageReceiver, string lockToken,
             [ServiceBus(Utils.PURGE_QUEUE_NAME, Connection = "ServiceBusConnection", EntityType = EntityType.Queue)] IAsyncCollector<Message> queueCollector,
             ILogger log)
         {

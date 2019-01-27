@@ -7,10 +7,10 @@ using System.Threading.Tasks;
 
 namespace AzureRpdeProxy
 {
-    class Utils
+    static class Utils
     {
         public const string CC_BY_LICENSE = "https://creativecommons.org/licenses/by/4.0/";
-        public const string QUEUE_NAME = "feedstate";
+        public const string FEED_STATE_QUEUE_NAME = "feedstate";
         public const string PURGE_QUEUE_NAME = "purge";
         public const string REGISTRATION_QUEUE_NAME = "registration";
 
@@ -32,7 +32,6 @@ namespace AzureRpdeProxy
         // https://blogs.msdn.microsoft.com/psssql/2012/10/30/worker-thread-governance-coming-to-azure-sql-database/
         static public int SqlRetrySecondsRecommendation = 10;
 
-        // TODO: Move this to app settings if allowed by deployment script
         static public string SqlDatabaseConnectionString = Environment.GetEnvironmentVariable("SqlServerConnection")?.ToString();
     }
 }

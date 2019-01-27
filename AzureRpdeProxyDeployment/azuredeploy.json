@@ -40,6 +40,20 @@
       "metadata": {
         "description": "Scaling approach used for functions. There is a tipping point of around 50 clients where static becomes more cost effective."
       }
+    },
+    "organizationName": {
+      "type": "string",
+      "defaultValue": "Acme Systems",
+      "metadata": {
+        "description": "The name of the organization providing this proxy."
+      }
+    },
+    "organizationURL": {
+      "type": "string",
+      "defaultValue": "https://www.example.com/",
+      "metadata": {
+        "description": "The website URL of the organization providing this proxy."
+      }
     }
   },
   "variables": {
@@ -275,6 +289,14 @@
             {
               "name": "FeedBaseUrl",
               "value": "[variables('feedBaseUrl')]"
+            },
+            {
+              "name": "OrganizationName",
+              "value": "[parameters('organizationName')]"
+            },
+            {
+              "name": "OrganizationUrl",
+              "value": "[parameters('organizationURL')]"
             },
             {
               "name": "SqlServerConnection",

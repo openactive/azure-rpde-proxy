@@ -85,6 +85,49 @@ namespace AzureRpdeProxy
         public dynamic data { get; set; }
     }
 
+    public class DataCatalog
+    {
+        [JsonProperty("@context")]
+        public string context
+        {
+            get { return "https://schema.org"; }
+        }
+        [JsonProperty("@type")]
+        public string type
+        {
+            get { return "DataCatalog"; }
+        }
+        public string id { get; set; }
+        public List<string> dataset { get; set; }
+        public DateTime datePublished { get; set; } = DateTime.Now;
+        public Organization publisher { get; set; }
+        public string license { get; set; } = Utils.CC_BY_LICENSE;
+    }
+
+    public class Organization
+    {
+        public string type
+        {
+            get { return "Organization"; }
+        }
+        public string name { get; set; }
+        public string url { get; set; }
+    }
+
+    [TableName("feeds")]
+    [PrimaryKey("source", AutoIncrement = false)]
+    public class Feed
+    {
+        [Column("source")]
+        public string source { get; set; }
+        [Column("url")]
+        public string url { get; set; }
+        [Column("datasetUrl")]
+        public string datasetUrl { get; set; }
+        [SerializedColumn("initialFeedState")]
+        public FeedState initialFeedState { get; set; }
+    }
+
     [TableName("items")]
     [PrimaryKey(new string[2] {"source", "id" }, AutoIncrement = false)]
     public class CachedRpdeItem

@@ -28,8 +28,8 @@ namespace AzureRpdeProxy
 
             string ServiceBusConnectionString = Environment.GetEnvironmentVariable("ServiceBusConnection");
             var queueClients = new List<IMessageReceiver> {
-                new MessageReceiver(ServiceBusConnectionString, Utils.QUEUE_NAME),
-                new MessageReceiver(ServiceBusConnectionString, Utils.QUEUE_NAME + "/$DeadLetterQueue"),
+                new MessageReceiver(ServiceBusConnectionString, Utils.FEED_STATE_QUEUE_NAME),
+                new MessageReceiver(ServiceBusConnectionString, Utils.FEED_STATE_QUEUE_NAME + "/$DeadLetterQueue"),
                 new MessageReceiver(ServiceBusConnectionString, Utils.PURGE_QUEUE_NAME),
                 new MessageReceiver(ServiceBusConnectionString, Utils.REGISTRATION_QUEUE_NAME)
             };

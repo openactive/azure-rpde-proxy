@@ -30,9 +30,9 @@ namespace AzureRpdeProxy
             httpClient = new HttpClient();
         }
 
-        [FunctionName("PollFeed")]
-        public static async Task Run([ServiceBusTrigger(Utils.QUEUE_NAME, Connection = "ServiceBusConnection")] Message message, MessageReceiver messageReceiver, string lockToken,
-            [ServiceBus(Utils.QUEUE_NAME, Connection = "ServiceBusConnection", EntityType = EntityType.Queue)] IAsyncCollector<Message> queueCollector,
+        [FunctionName("PollQueueHandler")]
+        public static async Task Run([ServiceBusTrigger(Utils.FEED_STATE_QUEUE_NAME, Connection = "ServiceBusConnection")] Message message, MessageReceiver messageReceiver, string lockToken,
+            [ServiceBus(Utils.FEED_STATE_QUEUE_NAME, Connection = "ServiceBusConnection", EntityType = EntityType.Queue)] IAsyncCollector<Message> queueCollector,
              ILogger log)
         {
             var feedStateItem = FeedState.DecodeFromMessage(message);
@@ -108,7 +108,7 @@ namespace AzureRpdeProxy
 
                         // Batch if more than a few updates
                         // TODO: Benchmark batch to see if always faster and can always be used
-                        if (true) //cacheItems.Count > 2)
+                        if (cacheItems.Count > 4)
                         {
                             using (SqlConnection connection = new SqlConnection(SqlUtils.SqlDatabaseConnectionString))
                             {
@@ -160,9 +160,6 @@ namespace AzureRpdeProxy
                         sw.Stop();
                         log.LogWarning($"POLL TIMER {feedStateItem.name}: {sw.ElapsedMilliseconds} ms to import {cacheItems.Count} items.");
 
-                        // TODO: Write items to cosmos, only overwritting when modified is newer
-                        // TODO: Count how many updates were actually made, if 0 check to see if there are duplicate messages in the queue and drop the one with the greater GUID (so that they don't both drop themselves) was a duplicate and do not add to the queue
-                        // Or compare the max modified of the database with the max modified of the items array, to determine if any modification has happened previous to this?
                         feedStateItem.pollRetries = 0;
                         delaySeconds = 0;
                     }
@@ -238,61 +235,3 @@ namespace AzureRpdeProxy
 
     }
 }
-
-/*
-public static class RegisterFeed
-{
-    [FunctionName("Function1")]
-    public static void Run([CosmosDBTrigger(
-            databaseName: "openactive",
-            collectionName: "items",
-            ConnectionStringSetting = "AccountEndpoint=https://gladstone-openactive-proxy.documents.azure.com:443/;AccountKey=rR4obv27zMJxtJel8ZeDsFSpDcrq0ESIOCbop4gf5aK6F0GvdP4qH2fHW0xuEpG7eScdVM2M2L3R5PSFRaIu7Q==;",
-            LeaseCollectionName = "leases")]IReadOnlyList<Document> input, ILogger log)
-    {
-        if (input != null && input.Count > 0)
-        {
-            log.LogInformation("Documents modified " + input.Count);
-            log.LogInformation("First document Id " + input[0].Id);
-        }
-    }
-}
-
-
-public static class WriteDocsIAsyncCollector
-{
-    [FunctionName("WriteDocsIAsyncCollector")]
-    public static async Task Run(
-        [QueueTrigger("todoqueueforwritemulti")] ToDoItem[] toDoItemsIn,
-        [CosmosDB(
-                databaseName: "ToDoItems",
-                collectionName: "Items",
-                ConnectionStringSetting = "CosmosDBConnection")]
-                IAsyncCollector<ToDoItem> toDoItemsOut,
-        ILogger log)
-    {
-        log.LogInformation($"C# Queue trigger function processed {toDoItemsIn?.Length} items");
-
-        foreach (ToDoItem toDoItem in toDoItemsIn)
-        {
-            log.LogInformation($"Description={toDoItem.Description}");
-            await toDoItemsOut.AddAsync(toDoItem);
-        }
-    }
-}
-
-
-[FunctionName("CosmosDbSample")]
-public static async Task<HttpResponseMessage> Run(
-   [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post", Route = null)]MyClass[] classes,
-   TraceWriter log,
-   [DocumentDB("ToDoList", "Items", ConnectionStringSetting = "CosmosDB")] IAsyncCollector<MyClass> documentsToStore)
-{
-    log.Info($"Detected {classes.Length} incoming documents");
-    foreach (MyClass aClass in classes)
-    {
-        await documentsToStore.AddAsync(aClass);
-    }
-
-    return new HttpResponseMessage(HttpStatusCode.Created);
-}
-*/
