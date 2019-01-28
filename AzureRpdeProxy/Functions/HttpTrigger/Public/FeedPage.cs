@@ -139,13 +139,33 @@ namespace AzureRpdeProxy
                 // Create response
                 var resp = req.CreateJSONResponseFromString(HttpStatusCode.OK, str.ToString());
 
-                // Pages other than the last page have a constant expiry set
+                // Leverage long-term caching in CDN for data payload
                 if (itemCount > 0)
                 {
-                    resp = resp.AsCachable(TimeSpan.FromHours(1));
+                    // Partial pages for high-frequency data have a shorter expiry set, so that they can give way to full pages that will take their place after a time
+                    // This speeds up reading of feeds for new data users to get fully up-to-date
+                    if (lastItem?.RecommendedPollInterval != null && lastItem.RecommendedPollInterval < 60)
+                    {
+                        if (itemCount < 30)
+                        {
+                            // For the end of near-real-time feeds, use a short expiry time due to the high volume
+                            resp = resp.AsCachable(TimeSpan.FromMinutes(15));
+                        }
+                        else
+                        {
+                            // For the beginning of near-real-time feeds, use a long-ish expiry to ensure data is not needlessly stockpiled
+                            resp = resp.AsCachable(TimeSpan.FromHours(4));
+                        }
+                    }
+                    else
+                    {
+                        // Fuller pages (likely earlier in the feed) have a long expiry set
+                        resp = resp.AsCachable(TimeSpan.FromHours(12));
+                    }
                 }
                 else
                 {
+                    // The last page has a minimal expiry based on the underlying data's refresh frequency
                     if (lastItem?.Expires != null)
                     {
                         // Add 2 seconds to expiry to account for proxy lag
@@ -158,7 +178,8 @@ namespace AzureRpdeProxy
                             {
                                 resp = resp.AsCachable(ProjectExpiryForward((DateTimeOffset)expiresFromProxy, (int)lastItem.RecommendedPollInterval));
                                 resp.Headers.Add(Utils.RECOMMENDED_POLL_INTERVAL_HEADER, Convert.ToString(lastItem.RecommendedPollInterval));
-                            } else
+                            }
+                            else
                             {
                                 // Default cache expiry
                                 resp = resp.AsCachable(TimeSpan.FromSeconds(Utils.DEFAULT_POLL_INTERVAL));
