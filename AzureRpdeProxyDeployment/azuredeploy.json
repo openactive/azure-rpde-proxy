@@ -89,7 +89,7 @@
         "administratorLoginPassword": "[variables('sqlserverAdminLoginPassword')]",
         "version": "12.0"
       },
-      "resources": ["[resourceId('Microsoft.SQL/servers/databases', variables('sqlserverName'), variables('databaseName'))]"
+      "resources": [
         {
           "name": "[variables('databaseName')]",
           "type": "databases",
