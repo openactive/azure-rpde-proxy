@@ -38,7 +38,7 @@
       ],
       "defaultValue": "Dynamic",
       "metadata": {
-        "description": "Scaling approach used for functions. There is a tipping point of around 50 clients where static becomes more cost effective."
+        "description": "Scaling approach used for functions. There is a tipping point of between 50-100 clients where static becomes more cost effective."
       }
     },
     "organizationName": {
