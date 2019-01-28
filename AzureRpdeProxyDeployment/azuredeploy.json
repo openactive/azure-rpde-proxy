@@ -89,7 +89,7 @@
         "administratorLoginPassword": "[variables('sqlserverAdminLoginPassword')]",
         "version": "12.0"
       },
-      "resources": [
+      "resources": ["[resourceId('Microsoft.SQL/servers/databases', variables('sqlserverName'), variables('databaseName'))]"
         {
           "name": "[variables('databaseName')]",
           "type": "databases",
@@ -335,7 +335,7 @@
         "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]",
         "[resourceId('microsoft.insights/components', variables('appInsightsServiceName'))]",
         "[resourceId('Microsoft.ServiceBus/namespaces', variables('serviceBusNamespaceName'))]",
-        "[resourceId('Microsoft.SQL/servers/databases', variables('sqlserverName'), variables('databaseName'))]"
+        "[resourceId('Microsoft.Sql/servers', variables('sqlserverName'))]"
       ],
       "resources": [
         {
