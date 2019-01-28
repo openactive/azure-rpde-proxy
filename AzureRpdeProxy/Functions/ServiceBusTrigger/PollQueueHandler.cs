@@ -69,7 +69,6 @@ namespace AzureRpdeProxy
                 else
                 {
                     // Store headers for use with last page
-                    expires = result.Content.Headers.Expires;
                     maxAge = result.Headers.CacheControl.MaxAge;
                     if (result.Headers.TryGetValues(Utils.RECOMMENDED_POLL_INTERVAL_HEADER, out IEnumerable<string> recommendedPollIntervalString)) {
                         if (Int32.TryParse(recommendedPollIntervalString.FirstOrDefault(), out int intervalNumeric))
@@ -77,7 +76,11 @@ namespace AzureRpdeProxy
                             recommendedPollInterval = intervalNumeric;
                         }
                     }
-                    
+
+                    // The Expires from a source may be wildly inaccurate if the source server does not synchronize time with an external NTP server
+                    // If provided, the RecommendedPollInterval is used to validate the Expires provided, and as a default in the case that it is inaccurate
+                    expires = ValidateOrDefaultExpires(result.Content.Headers.Expires, recommendedPollInterval);
+
                     data = JsonConvert.DeserializeObject<RpdeFeed>(await result.Content.ReadAsStringAsync());
                 }
 
@@ -269,7 +272,7 @@ namespace AzureRpdeProxy
                     } else
                     {
                         // Default last page polling interval
-                        newMessage = feedStateItem.EncodeToMessage(8);
+                        newMessage = feedStateItem.EncodeToMessage(Utils.DEFAULT_POLL_INTERVAL);
                     }
                 } else
                 {
@@ -290,5 +293,35 @@ namespace AzureRpdeProxy
             }
         }
 
+        private static DateTimeOffset? ValidateOrDefaultExpires(DateTimeOffset? unvalidatedExpires, int? recommendedPollIntervalSeconds)
+        {
+            // Ensure input params have values
+            if (!unvalidatedExpires.HasValue) return null;
+            var expires = (DateTimeOffset)unvalidatedExpires;
+            var maxInterval = recommendedPollIntervalSeconds ?? Utils.DEFAULT_POLL_INTERVAL;
+            var minInterval = Utils.MIN_POLL_INTERVAL;
+
+            var expiresFromNowInSeconds = DateTimeOffset.UtcNow.Subtract(expires).TotalSeconds;
+            if (expiresFromNowInSeconds < 0)
+            {
+                // If we've been given an expiry date in the response that is already in the past throw it directly in the bin (and assume default instead)
+                return DateTimeOffset.UtcNow.AddSeconds(maxInterval);
+            }
+            else if (expiresFromNowInSeconds > maxInterval)
+            {
+                // Limit the maximum exposure, so we don't get out of sync
+                return DateTimeOffset.UtcNow.AddSeconds(maxInterval);
+            }
+            else if (expiresFromNowInSeconds < minInterval)
+            {
+                // Limit the minimum to control load on the origin server
+                return DateTimeOffset.UtcNow.AddSeconds(minInterval);
+            }
+            else
+            {
+                // If within range then valid
+                return expires;
+            }
+        }
     }
 }

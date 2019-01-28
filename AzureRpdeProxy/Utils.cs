@@ -20,6 +20,8 @@ namespace AzureRpdeProxy
         public const long LAST_PAGE_ITEM_RESERVED_MODIFIED = long.MaxValue;
 
         public const string RECOMMENDED_POLL_INTERVAL_HEADER = "x-recommended-poll-interval";
+        public const int DEFAULT_POLL_INTERVAL = 8;
+        public const int MIN_POLL_INTERVAL = 5;
 
         public static string GetFeedUrl(string name)
         {

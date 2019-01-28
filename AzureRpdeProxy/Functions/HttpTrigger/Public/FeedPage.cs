@@ -154,14 +154,14 @@ namespace AzureRpdeProxy
                         if (expiresFromProxy < DateTimeOffset.UtcNow)
                         {
                             // If the expiry has passed, project it forward based on the poll interval if possible
-                            if (lastItem.RecommendedPollInterval != null)
+                            if (lastItem.RecommendedPollInterval != null && lastItem.RecommendedPollInterval != 0)
                             {
                                 resp = resp.AsCachable(ProjectExpiryForward((DateTimeOffset)expiresFromProxy, (int)lastItem.RecommendedPollInterval));
                                 resp.Headers.Add(Utils.RECOMMENDED_POLL_INTERVAL_HEADER, Convert.ToString(lastItem.RecommendedPollInterval));
                             } else
                             {
                                 // Default cache expiry
-                                resp = resp.AsCachable(TimeSpan.FromSeconds(10));
+                                resp = resp.AsCachable(TimeSpan.FromSeconds(Utils.DEFAULT_POLL_INTERVAL));
                             }
                         }
                         else
@@ -176,7 +176,7 @@ namespace AzureRpdeProxy
                     else
                     {
                         // Default cache expiry
-                        resp = resp.AsCachable(TimeSpan.FromSeconds(10));
+                        resp = resp.AsCachable(TimeSpan.FromSeconds(Utils.DEFAULT_POLL_INTERVAL));
                     }
                 }
 

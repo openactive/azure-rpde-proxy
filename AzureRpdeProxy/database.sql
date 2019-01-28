@@ -129,7 +129,7 @@ BEGIN
 	USING (SELECT [source], [id], [modified], [kind], [deleted], [data], [expiry] FROM @Tvp)
 		AS s ([source], [id], [modified], [kind], [deleted], [data], [expiry])
 		ON t.[source] = s.[source] AND t.[id] = s.[id]
-	WHEN MATCHED AND s.[modified] > t.[modified] THEN  
+	WHEN MATCHED AND (s.[modified] > t.[modified] OR s.[modified] = 9223372036854775807) THEN  
 		UPDATE SET
 			[modified] = s.[modified],
 			[kind] = s.[kind],
