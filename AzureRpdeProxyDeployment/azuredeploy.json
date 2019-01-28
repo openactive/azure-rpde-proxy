@@ -270,9 +270,9 @@
           "cors": {
             "allowedOrigins": [
               "*"
-            ],
-            "alwaysOn": "[bool(variables('alwaysOn'))]"
+            ]
           },
+          "alwaysOn": "[bool(variables('alwaysOn'))]",
           "use32BitWorkerProcess": false,
           "appSettings": [
             {
