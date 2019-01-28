@@ -60,6 +60,8 @@ namespace AzureRpdeProxy
                 sw.Start();
 
                 var result = await httpClient.GetAsync(feedStateItem.nextUrl);
+                var dateTimeRecieved = DateTimeOffset.UtcNow;
+
                 if (result.StatusCode == HttpStatusCode.Unauthorized)
                 {
                     // Deadletter on 401 (OWS key has changed)
@@ -80,7 +82,7 @@ namespace AzureRpdeProxy
                     // The Expires from a source may be wildly inaccurate if the source server does not synchronize time with an external NTP server
                     // The date of the source server is compared with the date at the proxy to discern the intended expiry.
                     // If the suggested expiry is too short, the minimum is used.
-                    expires = AdjustAndValidateExpires(result.Content.Headers.Expires, result.Headers.Date, recommendedPollInterval);
+                    expires = AdjustAndValidateExpires(result.Content.Headers.Expires, result.Headers.Date, dateTimeRecieved, recommendedPollInterval);
 
                     data = JsonConvert.DeserializeObject<RpdeFeed>(await result.Content.ReadAsStringAsync());
                 }
@@ -294,22 +296,19 @@ namespace AzureRpdeProxy
             }
         }
 
-        private static DateTimeOffset? AdjustAndValidateExpires(DateTimeOffset? expires, DateTimeOffset? date, int? recommendedPollIntervalSeconds)
+        private static DateTimeOffset? AdjustAndValidateExpires(DateTimeOffset? expires, DateTimeOffset? dateTimeSent, DateTimeOffset dateTimeRecieved, int? recommendedPollIntervalSeconds)
         {
             // Treat the expires as non-existant if it cannot be adjusted
-            if (!expires.HasValue || !date.HasValue) return null;
+            if (!expires.HasValue || !dateTimeSent.HasValue) return null;
 
             var originExpires = (DateTimeOffset)expires;
-            var originDate = (DateTimeOffset)date;
+            var originDate = (DateTimeOffset)dateTimeSent;
             
             // Get timespan until expiry, based on origin time
             var timespanUntilExpiry = originExpires.Subtract(originDate);
-
-            // Add timespan to proxy time to get adjusted date
-            var proxyExpires = DateTimeOffset.UtcNow.Add(timespanUntilExpiry);
-
+            
             // Validate the result to ensure proxy is not held hostage by inaccurate data provided
-            var expiresFromNowInSeconds = DateTimeOffset.UtcNow.Subtract(proxyExpires).TotalSeconds;
+            var expiresFromNowInSeconds = timespanUntilExpiry.TotalSeconds;
             var maxInterval = (recommendedPollIntervalSeconds ?? Utils.MAX_POLL_INTERVAL) * 1.5; // 1.5 allows for adjustment to be made to back to sync
             var minInterval = Utils.MIN_POLL_INTERVAL;
             
@@ -322,17 +321,17 @@ namespace AzureRpdeProxy
             else if (expiresFromNowInSeconds > maxInterval)
             {
                 // Limit the maximum exposure to inaccurate expires, so we don't get out of sync
-                return DateTimeOffset.UtcNow.AddSeconds(maxInterval);
+                return dateTimeRecieved.AddSeconds(maxInterval);
             }
             else if (expiresFromNowInSeconds < minInterval)
             {
                 // Limit the minimum to control load on the origin server
-                return DateTimeOffset.UtcNow.AddSeconds(minInterval);
+                return dateTimeRecieved.AddSeconds(minInterval);
             }
             else
             {
-                // If within range then valid
-                return proxyExpires;
+                // Add timespan to proxy time to get adjusted date
+                return dateTimeRecieved.Add(timespanUntilExpiry);
             }
         }
     }
