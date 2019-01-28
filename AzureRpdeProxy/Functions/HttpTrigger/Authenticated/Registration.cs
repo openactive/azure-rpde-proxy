@@ -37,9 +37,9 @@ namespace AzureRpdeProxy
 
             var registrationRequest = JsonConvert.DeserializeObject<ProxyRegistrationRequest>(requestBody);
 
-            if (registrationRequest?.name == null || registrationRequest?.url == null)
+            if (registrationRequest?.name == null || registrationRequest?.url == null || registrationRequest?.datasetUrl == null)
             {
-                return new BadRequestObjectResult("Please pass a JSON object containing name and url");
+                return new BadRequestObjectResult("Please pass a JSON object containing name, url and datasetUrl");
             }
 
             dynamic data = null;
