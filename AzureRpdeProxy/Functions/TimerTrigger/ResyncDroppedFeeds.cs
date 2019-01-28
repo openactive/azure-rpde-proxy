@@ -15,7 +15,7 @@ namespace AzureRpdeProxy
     public static class ResyncDroppedFeeds
     {
         [FunctionName("ResyncDroppedFeeds")]
-        public static async Task Run([TimerTrigger("*/10 * * * * *")]TimerInfo myTimer, ILogger log,
+        public static async Task Run([TimerTrigger("0 50 * * * *")]TimerInfo myTimer, ILogger log,
             [ServiceBus(Utils.PURGE_QUEUE_NAME, Connection = "ServiceBusConnection", EntityType = EntityType.Queue)] ICollector<FeedState> queueCollector)
         {
             if (Environment.GetEnvironmentVariable("ClearProxyCache")?.ToString() == "true")

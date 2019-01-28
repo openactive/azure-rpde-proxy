@@ -45,8 +45,7 @@ namespace AzureRpdeProxy
         public int purgeRetries { get; set; } = 0;
         public long purgedItems { get; set; } = 0;
         public long totalPurgeCount { get; set; } = -1;
-
-        public bool idIsNumeric { get; set; } = false;
+        
         public Guid id { get; set; } = Guid.NewGuid();
         public int deletedItemDaysToLive { get; set; } = 7; // 7 days is RPDE spec recommendation
 
