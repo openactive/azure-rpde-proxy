@@ -53,16 +53,7 @@ namespace AzureRpdeProxy
                 if (itemCount < 1000)
                 {
                     log.LogInformation($"Purge complete for '{feedStateItem.name}'");
-                    
-                    // Delete the successfully purged feed from the feeds table
-                    using (var db = new Database(SqlUtils.SqlDatabaseConnectionString, DatabaseType.SqlServer2012, SqlClientFactory.Instance))
-                    {
-                        db.Delete<Feed>(new Feed
-                        {
-                            source = feedStateItem.name
-                        });
-                    }
-
+                   
                     await messageReceiver.CompleteAsync(lockToken);
 
                     // Attempt re-registration unless the proxy cache is being cleared
@@ -71,7 +62,11 @@ namespace AzureRpdeProxy
                         feedStateItem.ResetCounters();
                         feedStateItem.totalPurgeCount++;
                         await registrationQueueCollector.AddAsync(feedStateItem.EncodeToMessage(1));
+                    } else
+                    {
+                        log.LogWarning($"Purge Successfully Cleaned: {feedStateItem.name}");
                     }
+
                 } else
                 {
                     feedStateItem.purgedItems += itemCount;

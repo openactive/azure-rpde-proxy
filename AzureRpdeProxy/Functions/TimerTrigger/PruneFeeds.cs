@@ -8,9 +8,9 @@ using Microsoft.Extensions.Logging;
 
 namespace AzureRpdeProxy
 {
-    public static class PruneFeed
+    public static class PruneFeeds
     {
-        [FunctionName("PruneFeed")]
+        [FunctionName("PruneFeeds")]
         public static async Task Run([TimerTrigger("0 */5 * * * *")]TimerInfo myTimer, ILogger log)
         {
             log.LogInformation($"Prune trigger function executed at: {DateTime.Now}");

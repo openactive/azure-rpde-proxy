@@ -106,7 +106,20 @@
             "collation": "SQL_Latin1_General_CP1_CI_AS",
             "maxSizeBytes": "5368709120",
             "requestedServiceObjectiveName": "S1"
-          }
+          },
+          "resources": [
+            {
+              "name": "Default",
+              "type": "backupShortTermRetentionPolicies",
+              "dependsOn": [
+                "[resourceId('Microsoft.SQL/servers/databases', variables('sqlserverName'), variables('databaseName'))]"
+              ],
+              "apiVersion": "2017-10-01-preview",
+              "properties": {
+                "retentionDays": "7"
+              }
+            }
+          ]
         },
         {
           "type": "firewallrules",
@@ -322,7 +335,7 @@
         "[resourceId('Microsoft.Storage/storageAccounts', variables('storageAccountName'))]",
         "[resourceId('microsoft.insights/components', variables('appInsightsServiceName'))]",
         "[resourceId('Microsoft.ServiceBus/namespaces', variables('serviceBusNamespaceName'))]",
-        "[resourceId('Microsoft.Sql/servers', variables('sqlserverName'))]"
+        "[resourceId('Microsoft.SQL/servers/databases', variables('sqlserverName'), variables('databaseName'))]"
       ],
       "resources": [
         {

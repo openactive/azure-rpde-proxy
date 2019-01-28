@@ -1,16 +1,5 @@
 ﻿IF EXISTS ( SELECT * 
             FROM   sysobjects 
-            WHERE  id = object_id(N'[dbo].[UPDATE_ITEM]') 
-                   and OBJECTPROPERTY(id, N'IsProcedure') = 1 )
-            BEGIN
-               PRINT '    Dropping stored procedure'
-                        DROP PROCEDURE [dbo].[UPDATE_ITEM]
-END
-
-GO
-
-IF EXISTS ( SELECT * 
-            FROM   sysobjects 
             WHERE  id = object_id(N'[dbo].[UPDATE_ITEM_BATCH]') 
                    and OBJECTPROPERTY(id, N'IsProcedure') = 1 )
             BEGIN
@@ -128,33 +117,6 @@ END
 
 GO
 
-CREATE PROCEDURE [dbo].[UPDATE_ITEM]
-(
-	@source varchar (50),
-    @id nvarchar(50),
-    @modified bigint,
-	@kind varchar(50),
-	@deleted bit,
-	@data varchar(max),
-	@expiry datetime
-)
-AS
-BEGIN
-	IF EXISTS (SELECT 1 FROM [dbo].[items] t WHERE t.[source] = @source AND t.[id] = @id)
-		UPDATE [dbo].[items] SET
-			[modified] = @modified,
-			[kind] = @kind,
-			[deleted] = @deleted,
-			[data] = @data,
-			[expiry] = @expiry
-			WHERE [source] = @source AND [id] = @id AND @modified >= [modified]
-	ELSE
-		INSERT INTO [dbo].[items] ([source], [id], [modified], [kind], [deleted], [data], [expiry]) 
-		VALUES (@source, @id, @modified, @kind, @deleted, @data, @expiry);
-END
-
-GO
-
 CREATE PROCEDURE [dbo].[UPDATE_ITEM_BATCH]
 (
 	@Tvp as ItemTableType READONLY
@@ -167,7 +129,7 @@ BEGIN
 	USING (SELECT [source], [id], [modified], [kind], [deleted], [data], [expiry] FROM @Tvp)
 		AS s ([source], [id], [modified], [kind], [deleted], [data], [expiry])
 		ON t.[source] = s.[source] AND t.[id] = s.[id]
-	WHEN MATCHED AND s.[modified] >= t.[modified] THEN  
+	WHEN MATCHED AND s.[modified] > t.[modified] THEN  
 		UPDATE SET
 			[modified] = s.[modified],
 			[kind] = s.[kind],
@@ -178,6 +140,7 @@ BEGIN
 		INSERT ([source], [id], [modified], [kind], [deleted], [data], [expiry]) 
 		VALUES (s.[source], s.[id], s.[modified], s.[kind], s.[deleted], s.[data], s.[expiry]);
 	COMMIT
+	RETURN @@rowcount;
 END
 
 GO

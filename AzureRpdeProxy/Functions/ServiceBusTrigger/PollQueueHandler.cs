@@ -7,6 +7,7 @@ using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
 using NPoco;
 using System;
+using System.Collections.Generic;
 using System.Configuration;
 using System.Data;
 using System.Data.SqlClient;
@@ -44,6 +45,12 @@ namespace AzureRpdeProxy
             feedStateItem.dateModified = DateTime.Now;
 
             int delaySeconds = 0;
+            bool isLastPage = false;
+
+            // Store headers of last page to be passed on
+            DateTimeOffset? expires = null;
+            TimeSpan? maxAge = null;
+            int? recommendedPollInterval = null;
 
             // Attempt to get next page
             RpdeFeed data = null;
@@ -61,6 +68,16 @@ namespace AzureRpdeProxy
                 }
                 else
                 {
+                    // Store headers for use with last page
+                    expires = result.Content.Headers.Expires;
+                    maxAge = result.Headers.CacheControl.MaxAge;
+                    if (result.Headers.TryGetValues(Utils.RECOMMENDED_POLL_INTERVAL_HEADER, out IEnumerable<string> recommendedPollIntervalString)) {
+                        if (Int32.TryParse(recommendedPollIntervalString.FirstOrDefault(), out int intervalNumeric))
+                        {
+                            recommendedPollInterval = intervalNumeric;
+                        }
+                    }
+                    
                     data = JsonConvert.DeserializeObject<RpdeFeed>(await result.Content.ReadAsStringAsync());
                 }
 
@@ -76,92 +93,119 @@ namespace AzureRpdeProxy
             {
                 // Do nothing to immediately deadletter this response
             }
-            // check for "license": "https://creativecommons.org/licenses/by/4.0/"
-            else if (data?.license == Utils.CC_BY_LICENSE && data?.next != null)
+            // check for valid RPDE base properties
+            else if (data?.license == Utils.CC_BY_LICENSE && data?.next != null && data?.items != null)
             {
-                if (data?.items?.Count > 0)
+                var cacheItems = data.items.Select(item => item.ConvertToStringId()).Select(item => new CachedRpdeItem
                 {
-                    var cacheItems = data?.items.Select(item => new CachedRpdeItem
+                    id = item.id,
+                    modified = item.modified,
+                    deleted = item.state == "deleted",
+                    // Note must be manually serialised to pass to stored procedure, which ignores object annotations
+                    data = JsonConvert.SerializeObject(item, Newtonsoft.Json.Formatting.None,
+                    new JsonSerializerSettings
                     {
-                        id = item.id is int || item.id is long ? ((long)item.id).ToString("D20") : HttpUtility.UrlEncode(item.id),
-                        modified = item.modified,
-                        deleted = item.state == "deleted",
-                        // Note must be manually serialised to pass to stored procedure, which ignores object annotations
-                        data = JsonConvert.SerializeObject(item, Newtonsoft.Json.Formatting.None,
-                        new JsonSerializerSettings
-                        {
-                            NullValueHandling = NullValueHandling.Ignore
-                        }),
-                        kind = item.kind,
-                        source = feedStateItem.name,
-                        expiry = item.state == "deleted" ? DateTime.UtcNow.AddDays(feedStateItem.deletedItemDaysToLive) : (DateTime?)null
-                    }).ToList();
+                        NullValueHandling = NullValueHandling.Ignore
+                    }),
+                    kind = item.kind,
+                    source = feedStateItem.name,
+                    expiry = item.state == "deleted" ? DateTime.UtcNow.AddDays(feedStateItem.deletedItemDaysToLive) : (DateTime?)null
+                }).ToList();
 
+                if (cacheItems.Count == 0 && feedStateItem.nextUrl == data.next)
+                {
+                    isLastPage = true;
+
+                    if (feedStateItem.lastPageReads == 0)
+                    {
+                        // Add headers into data of dummy last item so FeedPage does not need an additional database query
+                        // to access them
+                        cacheItems.Add(new CachedRpdeItem
+                        {
+                            id = Utils.LAST_PAGE_ITEM_RESERVED_ID,
+                            modified = Utils.LAST_PAGE_ITEM_RESERVED_MODIFIED,
+                            deleted = false,
+                            data = JsonConvert.SerializeObject(new LastItem
+                            {
+                                Expires = expires,
+                                MaxAge = maxAge,
+                                RecommendedPollInterval = recommendedPollInterval
+
+                            }, Newtonsoft.Json.Formatting.None,
+                            new JsonSerializerSettings
+                            {
+                                NullValueHandling = NullValueHandling.Ignore
+                            }),
+                            kind = string.Empty,
+                            source = feedStateItem.name,
+                            expiry = null
+                        });
+                    }
+
+                    feedStateItem.lastPageReads++;
+                    feedStateItem.pollRetries = 0;
+                }
+                else
+                {
+                    feedStateItem.lastPageReads = 0;
                     feedStateItem.totalPagesRead++;
                     feedStateItem.totalItemsRead += cacheItems.Count;
                     feedStateItem.nextUrl = data.next;
+                    feedStateItem.pollRetries = 0;
+                }
 
+                // Only write to database if there are items to write
+                if (cacheItems.Count > 0)
+                {
                     try
                     {
                         var sw = new Stopwatch();
                         sw.Start();
 
-                        // Batch if more than a few updates
-                        // TODO: Benchmark batch to see if always faster and can always be used
-                        if (cacheItems.Count > 4)
+                        int rowsUpdated = 0;
+
+                        using (SqlConnection connection = new SqlConnection(SqlUtils.SqlDatabaseConnectionString))
                         {
-                            using (SqlConnection connection = new SqlConnection(SqlUtils.SqlDatabaseConnectionString))
+                            connection.Open();
+
+                            DataTable table = new DataTable();
+                            table.Columns.Add("source", typeof(string));
+                            table.Columns.Add("id", typeof(string));
+                            table.Columns.Add("modified", typeof(long));
+                            table.Columns.Add("kind", typeof(string));
+                            table.Columns.Add("deleted", typeof(bool));
+                            table.Columns.Add("data", typeof(string));
+                            table.Columns.Add("expiry", typeof(DateTime));
+                            foreach (var item in cacheItems)
                             {
-                                connection.Open();
-
-                                DataTable table = new DataTable();
-                                table.Columns.Add("source", typeof(string));
-                                table.Columns.Add("id", typeof(string));
-                                table.Columns.Add("modified", typeof(long));
-                                table.Columns.Add("kind", typeof(string));
-                                table.Columns.Add("deleted", typeof(bool));
-                                table.Columns.Add("data", typeof(string));
-                                table.Columns.Add("expiry", typeof(DateTime));
-                                foreach (var item in cacheItems)
-                                {
-                                    table.Rows.Add(item.source, item.id, item.modified, item.kind, item.deleted, item.data, item.expiry);
-                                }
-
-                                SqlCommand cmd = new SqlCommand("UPDATE_ITEM_BATCH", connection);
-                                cmd.CommandType = CommandType.StoredProcedure;
-
-                                cmd.Parameters.Add(
-                                    new SqlParameter()
-                                    {
-                                        ParameterName = "@Tvp",
-                                        SqlDbType = SqlDbType.Structured,
-                                        TypeName = "ItemTableType",
-                                        Value = table,
-                                    });
-
-                                await cmd.ExecuteNonQueryAsync();
+                                table.Rows.Add(item.source, item.id, item.modified, item.kind, item.deleted, item.data, item.expiry);
                             }
+
+                            SqlCommand cmd = new SqlCommand("UPDATE_ITEM_BATCH", connection);
+                            cmd.CommandType = CommandType.StoredProcedure;
+
+                            cmd.Parameters.Add(
+                                new SqlParameter()
+                                {
+                                    ParameterName = "@Tvp",
+                                    SqlDbType = SqlDbType.Structured,
+                                    TypeName = "ItemTableType",
+                                    Value = table,
+                                });
+
+                            rowsUpdated = await cmd.ExecuteNonQueryAsync();
                         }
-                        else
+                        
+                        // If no rows are updated, message must be a duplicate, as previous message did the work
+                        if (rowsUpdated == 0 && !isLastPage)
                         {
-                            using (var db = new Database(SqlUtils.SqlDatabaseConnectionString, DatabaseType.SqlServer2012, SqlClientFactory.Instance))
-                            {
-                                using (var transaction = db.GetTransaction())
-                                {
-                                    foreach (var item in cacheItems)
-                                    {
-                                        db.Execute("UPDATE_ITEM", CommandType.StoredProcedure, item);
-                                    }
-                                    transaction.Complete();
-                                }
-                            }
+                            log.LogWarning($"DUPLICATE MESSAGE DROPPED {feedStateItem.name}: {feedStateItem.id}");
+                            await messageReceiver.CompleteAsync(lockToken);
+                            return;
                         }
 
                         sw.Stop();
                         log.LogWarning($"POLL TIMER {feedStateItem.name}: {sw.ElapsedMilliseconds} ms to import {cacheItems.Count} items.");
-
-                        feedStateItem.pollRetries = 0;
-                        delaySeconds = 0;
                     }
                     catch (SqlException ex)
                     {
@@ -187,11 +231,6 @@ namespace AzureRpdeProxy
                         log.LogWarning($"Error writing page to SQL Server: Retrying '{feedStateItem.name}' attempt {feedStateItem.pollRetries} in {delaySeconds} seconds. Error: " + ex.ToString());
                     }
                 }
-                else
-                {
-                    feedStateItem.pollRetries = 0;
-                    delaySeconds = feedStateItem.recommendedPollInterval;
-                }
             }
             else
             {
@@ -199,8 +238,6 @@ namespace AzureRpdeProxy
                 {
                     log.LogError($"Error retrieving page: DEAD-LETTERING '{feedStateItem.name}'");
 
-                    //message.
-                    //feedStateItem.DeadLetter("Too many retries", $"ResubmitCount is {resubmitCount}");
                     delaySeconds = -1;
                 }
                 else
@@ -218,8 +255,28 @@ namespace AzureRpdeProxy
                 await messageReceiver.DeadLetterAsync(lockToken);
             } else
             {
-                var newMessage = feedStateItem.EncodeToMessage(delaySeconds);
-
+                Message newMessage;
+                // If immediate poll is specified for last page, respect any Expires header provided for throttling
+                if (delaySeconds == 0 && isLastPage)
+                {
+                    if (expires != null)
+                    {
+                        newMessage = feedStateItem.EncodeToMessage(expires);
+                    }
+                    else if (maxAge != null)
+                    {
+                        newMessage = feedStateItem.EncodeToMessage((int)maxAge?.TotalSeconds);
+                    } else
+                    {
+                        // Default last page polling interval
+                        newMessage = feedStateItem.EncodeToMessage(8);
+                    }
+                } else
+                {
+                    // If not last page, follow delaySeconds
+                    newMessage = feedStateItem.EncodeToMessage(delaySeconds);
+                }
+                
                 // These two operations should be in a transaction, but to save cost they ordered so that a failure will result in the polling stopping,
                 // and a reregistration being required to restart it (24 hrs later)
                 //using (var scope = new TransactionScope(TransactionScopeAsyncFlowOption.Enabled))

@@ -51,6 +51,7 @@ namespace AzureRpdeProxy
 
                 StringBuilder str = new StringBuilder();
                 int itemCount = 0;
+                LastItem lastItem = null;
                 using (SqlConnection connection = new SqlConnection(SqlUtils.SqlDatabaseConnectionString))
                 {
                     SqlCommand cmd = new SqlCommand("READ_ITEM_PAGE", connection);
@@ -84,37 +85,45 @@ namespace AzureRpdeProxy
                     // (So even the last page will return at least 1 record)
                     SqlDataReader reader = await cmd.ExecuteReaderAsync();
 
-                    // Construct using string concatenation instead of deserialisation for maximum efficiency
-
                     // Call Read before accessing data.
                     if (await reader.ReadAsync())
                     {
-                        str.Append(",\"items\": [");
-                        //Skip the first row if it's the same as the query parameters
+                        var itemStrings = new List<string>();
+
+                        //Skip the first row if it's the same as the query parameters (see comment above)
                         if ((reader.GetString((int)ResultColumns.id) != afterId &&
                               reader.GetInt64((int)ResultColumns.modified) != afterTimestamp) || reader.Read())
                         {
-                            str.Append(reader.GetString(0));
-                            // Get the last item values for the next URL
-                            afterTimestamp = reader.GetInt64((int)ResultColumns.modified);
-                            afterId = reader.GetString((int)ResultColumns.id);
-                            itemCount++;
-                            while (await reader.ReadAsync())
+                            do
                             {
-                                str.Append(",");
-                                str.Append(reader.GetString(0));
-                                // Get the last item values for the next URL
-                                afterTimestamp = reader.GetInt64((int)ResultColumns.modified);
-                                afterId = reader.GetString((int)ResultColumns.id);
-                                itemCount++;
+                                var timestamp = reader.GetInt64((int)ResultColumns.modified);
+                                if (timestamp != Utils.LAST_PAGE_ITEM_RESERVED_MODIFIED)
+                                {
+                                    itemStrings.Add(reader.GetString((int)ResultColumns.data));
+
+                                    // Get the last item values for the next URL
+                                    afterTimestamp = timestamp;
+                                    afterId = reader.GetString((int)ResultColumns.id);
+                                }
+                                else
+                                {
+                                    lastItem = JsonConvert.DeserializeObject<LastItem>(reader.GetString((int)ResultColumns.data));
+                                }
                             }
+                            while (await reader.ReadAsync());
                         }
+
+                        itemCount = itemStrings.Count;
+
+                        // Construct response using string concatenation instead of deserialisation for maximum efficiency
+                        str.Append("{\"next\":");
+                        str.Append(JsonConvert.ToString($"{Utils.GetFeedUrl(source)}?afterTimestamp={afterTimestamp}&afterId={afterId}"));
+                        str.Append(",\"items\": [");
+                        str.AppendJoin(',', itemStrings);
                         str.Append("],\"license\":");
                         str.Append(JsonConvert.ToString(Utils.CC_BY_LICENSE));
                         str.Append("}");
-                        // Add next URL to beginning of response
-                        str.Insert(0, "{\"next\":" + JsonConvert.ToString($"{Utils.GetFeedUrl(source)}?afterTimestamp={afterTimestamp}&afterId={afterId}"));
-
+                       
                         // Call Close when done reading.
                         reader.Close();
                     } else
@@ -128,8 +137,48 @@ namespace AzureRpdeProxy
                 }
 
                 // Create response
-                var resp = req.CreateJSONResponseFromString(HttpStatusCode.OK, str.ToString())
-                    .AsCachable(itemCount > 0 ? TimeSpan.FromHours(1) : TimeSpan.FromSeconds(10));
+                var resp = req.CreateJSONResponseFromString(HttpStatusCode.OK, str.ToString());
+
+                // Pages other than the last page have a constant expiry set
+                if (itemCount > 0)
+                {
+                    resp = resp.AsCachable(TimeSpan.FromHours(1));
+                }
+                else
+                {
+                    if (lastItem?.Expires != null)
+                    {
+                        // Add 2 seconds to expiry to account for proxy lag
+                        const int ESTIMATED_PROXY_LATENCY_SECONDS = 2;
+                        var expiresFromProxy = lastItem?.Expires?.AddSeconds(ESTIMATED_PROXY_LATENCY_SECONDS);
+                        if (expiresFromProxy < DateTimeOffset.UtcNow)
+                        {
+                            // If the expiry has passed, project it forward based on the poll interval if possible
+                            if (lastItem.RecommendedPollInterval != null)
+                            {
+                                resp = resp.AsCachable(ProjectExpiryForward((DateTimeOffset)expiresFromProxy, (int)lastItem.RecommendedPollInterval));
+                                resp.Headers.Add(Utils.RECOMMENDED_POLL_INTERVAL_HEADER, Convert.ToString(lastItem.RecommendedPollInterval));
+                            } else
+                            {
+                                // Default cache expiry
+                                resp = resp.AsCachable(TimeSpan.FromSeconds(10));
+                            }
+                        }
+                        else
+                        {
+                            resp = resp.AsCachable(expiresFromProxy);
+                        }
+                    }
+                    else if (lastItem?.MaxAge != null)
+                    {
+                        resp = resp.AsCachable((TimeSpan)lastItem.MaxAge);
+                    }
+                    else
+                    {
+                        // Default cache expiry
+                        resp = resp.AsCachable(TimeSpan.FromSeconds(10));
+                    }
+                }
 
                 sw.Stop();
 
@@ -149,6 +198,14 @@ namespace AzureRpdeProxy
                     return req.CreateErrorResponse(HttpStatusCode.InternalServerError, ex.Message);
                 }
             }
+        }
+
+        private static DateTimeOffset ProjectExpiryForward(DateTimeOffset expires, int recommendedPollInterval)
+        {
+            var expiresFromNowInSeconds = DateTimeOffset.UtcNow.Subtract(expires).TotalSeconds;
+
+            var intervalsCount = Math.Ceiling(expiresFromNowInSeconds / recommendedPollInterval);
+            return expires.AddSeconds(intervalsCount * recommendedPollInterval);
         }
 
         public static HttpResponseMessage CreateTooManyRequestsResponse(this HttpRequest req, TimeSpan RetryAfter)
@@ -172,8 +229,20 @@ namespace AzureRpdeProxy
             request.Headers.CacheControl = new CacheControlHeaderValue()
             {
                 Public = true,
-                MaxAge = cacheMaxAge
+                MaxAge = cacheMaxAge,
+                SharedMaxAge = cacheMaxAge
             };
+
+            return request;
+        }
+
+        public static HttpResponseMessage AsCachable(this HttpResponseMessage request, DateTimeOffset? expires)
+        {
+            request.Headers.CacheControl = new CacheControlHeaderValue()
+            {
+                Public = true
+            };
+            request.Content.Headers.Expires = expires;
 
             return request;
         }

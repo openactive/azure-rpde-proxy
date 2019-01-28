@@ -4,6 +4,7 @@ using NPoco;
 using System;
 using System.Collections.Generic;
 using System.Text;
+using System.Web;
 
 namespace AzureRpdeProxy
 {
@@ -16,10 +17,15 @@ namespace AzureRpdeProxy
 
         public Message EncodeToMessage(int delaySeconds)
         {
+            return EncodeToMessage(DateTime.UtcNow.AddSeconds(delaySeconds));
+        }
+
+        public Message EncodeToMessage(DateTimeOffset? expires)
+        {
             return new Message {
                 Body = Encoding.UTF8.GetBytes(JsonConvert.SerializeObject(this)),
                 ContentType = "application/json",
-                ScheduledEnqueueTimeUtc = DateTime.UtcNow.AddSeconds(delaySeconds)
+                ScheduledEnqueueTimeUtc = expires?.UtcDateTime ?? DateTime.UtcNow 
             };
         }
 
@@ -34,6 +40,7 @@ namespace AzureRpdeProxy
         public long totalItemsRead { get; set; }
         public long totalPollRequests { get; set; } = 0;
         public long totalErrors { get; set; } = 0;
+        public long lastPageReads { get; set; } = 0;
         public int pollRetries { get; set; } = 0;
         public int purgeRetries { get; set; } = 0;
         public long purgedItems { get; set; } = 0;
@@ -42,7 +49,6 @@ namespace AzureRpdeProxy
         public bool idIsNumeric { get; set; } = false;
         public Guid id { get; set; } = Guid.NewGuid();
         public int deletedItemDaysToLive { get; set; } = 7; // 7 days is RPDE spec recommendation
-        public int recommendedPollInterval { get; set; } = 10;
 
         public void ResetCounters()
         {
@@ -69,6 +75,13 @@ namespace AzureRpdeProxy
         public string queue { get; internal set; }
     }
 
+    public class LastItem
+    {
+        public int? RecommendedPollInterval { get; set; }
+        public DateTimeOffset? Expires { get; set; }
+        public TimeSpan? MaxAge { get; set; }
+    }
+
     public class RpdeFeed
     {
         public string next { get; set; }
@@ -78,6 +91,11 @@ namespace AzureRpdeProxy
 
     public class RpdeItem
     {
+        public RpdeItem ConvertToStringId()
+        {
+            id = id is int || id is long ? ((long)id).ToString("D20") : HttpUtility.UrlEncode(id);
+            return this;
+        }
         public virtual dynamic id { get; set; }
         public long modified { get; set; }
         public string kind { get; set; }

@@ -8,6 +8,7 @@ using Newtonsoft.Json;
 using NPoco;
 using System;
 using System.Data.SqlClient;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Threading.Tasks;
@@ -36,7 +37,20 @@ namespace AzureRpdeProxy
 
             log.LogInformation($"Registration Trigger Started: {feedStateItem.name}");
 
-            dynamic data = null;
+            // Double-check this feed doesn't already exist
+            var matchingFeedStateList = await Utils.GetFeedStateFromQueues(feedStateItem.name, true);
+            if (matchingFeedStateList.Count > 0)
+            {
+                if (matchingFeedStateList.First().url != feedStateItem.url)
+                {
+                    log.LogError($"Conflicting feed already registered with same name '{feedStateItem.name}' using different url '{matchingFeedStateList.First().url}', and will be dropped.");
+                } else
+                {
+                    log.LogError($"Conflicting feed already registered with same name '{feedStateItem.name}' using same url '{matchingFeedStateList.First().url}', and will be dropped.");
+                }
+                await messageReceiver.CompleteAsync(lockToken);
+                return;
+            }
 
             // Attempt to get first page
             try
@@ -46,12 +60,19 @@ namespace AzureRpdeProxy
                 {
                     // Remove from queue on 401 (OWS key has changed)
                     log.LogWarning($"Feed attempting registration returned 401 and will be dropped: '{feedStateItem.name}'.");
+                    DeleteFeedFromDatabase(feedStateItem.name);
                     await messageReceiver.CompleteAsync(lockToken);
                     return;
                 }
                 else
                 {
-                    data = JsonConvert.DeserializeObject<RpdeFeed>(await result.Content.ReadAsStringAsync());
+                    var data = JsonConvert.DeserializeObject<RpdeFeed>(await result.Content.ReadAsStringAsync());
+
+                    // check for "license" and valid data: "https://creativecommons.org/licenses/by/4.0/"
+                    if (data?.license != Utils.CC_BY_LICENSE)
+                    {
+                        throw new ApplicationException($"Registration error while validating first page - dropping feed. Error retrieving license for '{feedStateItem.url}'.");
+                    }
                 }
             }
             catch (Exception ex)
@@ -60,6 +81,7 @@ namespace AzureRpdeProxy
                 if (feedStateItem.pollRetries > 3)
                 {
                     log.LogError($"Registration error while validating first page. Dropping feed. Error retrieving '{feedStateItem.url}'. {ex.ToString()}");
+                    DeleteFeedFromDatabase(feedStateItem.name);
                     await messageReceiver.CompleteAsync(lockToken);
                 }
                 else
@@ -70,14 +92,6 @@ namespace AzureRpdeProxy
                     await messageReceiver.CompleteAsync(lockToken);
                     await registrationQueueCollector.AddAsync(feedStateItem.EncodeToMessage(30));
                 }
-                return;
-            }
-
-            // check for "license": "https://creativecommons.org/licenses/by/4.0/"
-            if (data?.license != Utils.CC_BY_LICENSE)
-            {
-                log.LogError($"Registration error while validating first page - dropping feed. Error retrieving license for '{feedStateItem.url}'.");
-                await messageReceiver.CompleteAsync(lockToken);
                 return;
             }
 
@@ -101,6 +115,18 @@ namespace AzureRpdeProxy
             await messageReceiver.CompleteAsync(lockToken);
             await queueCollector.AddAsync(feedStateItem.EncodeToMessage(0));
             log.LogInformation($"Registration Trigger Promoting Feed: {feedStateItem.name}");
+        }
+
+        public static void DeleteFeedFromDatabase(string name)
+        {
+            // Delete the successfully the feed from the feeds table (if a failing feed has just been purged before being sent here, this is the final part of cleanup)
+            using (var db = new Database(SqlUtils.SqlDatabaseConnectionString, DatabaseType.SqlServer2012, SqlClientFactory.Instance))
+            {
+                db.Delete<Feed>(new Feed
+                {
+                    source = name
+                });
+            }
         }
     }
 }

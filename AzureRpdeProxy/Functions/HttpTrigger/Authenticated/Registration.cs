@@ -60,29 +60,9 @@ namespace AzureRpdeProxy
                 return new UnprocessableEntityObjectResult("Registration error while validating first page. Invalid RPDE feed supplied: open license not found");
             }
 
+            var matchingFeedStateList = await Utils.GetFeedStateFromQueues(registrationRequest.name);
 
-            string ServiceBusConnectionString = Environment.GetEnvironmentVariable("ServiceBusConnection");
-            var queueClients = new List<IMessageReceiver> {
-                new MessageReceiver(ServiceBusConnectionString, Utils.FEED_STATE_QUEUE_NAME),
-                new MessageReceiver(ServiceBusConnectionString, Utils.FEED_STATE_QUEUE_NAME + "/$DeadLetterQueue"),
-                new MessageReceiver(ServiceBusConnectionString, Utils.PURGE_QUEUE_NAME),
-                new MessageReceiver(ServiceBusConnectionString, Utils.REGISTRATION_QUEUE_NAME)
-            };
-            List<FeedState> list = new List<FeedState>();
-
-            foreach (var client in queueClients)
-            {
-                List<FeedState> lastRetrievedList = null;
-                do
-                {
-                    lastRetrievedList = (await client.PeekAsync(100)).Select(m => FeedState.DecodeFromMessage(m)).ToList();
-                    list.AddRange(lastRetrievedList);
-                } while (lastRetrievedList.Count > 0);
-            }
-
-            var matchingFeedStateList = list.Where(fs => fs.name == registrationRequest.name);
-
-            if (matchingFeedStateList.Count() > 0)
+            if (matchingFeedStateList.Count > 0)
             {
                 if (matchingFeedStateList.First().url != registrationRequest.url)
                 {
@@ -93,12 +73,7 @@ namespace AzureRpdeProxy
                 }
             } else
             {
-                // TODO: Break out block into function to register new feed
-
-                // Clear Cosmos DB of potential old content relating to feed, to ensure a clean start
-                // TODO: Clear cosmos
-
-                // Purge all items before registration starts
+                // Purge all items that may be left in the database before registration starts
                 queueCollector.Add(new FeedState()
                 {
                     name = registrationRequest.name,
@@ -107,7 +82,6 @@ namespace AzureRpdeProxy
                     dateCreated = DateTime.UtcNow,
                     datasetUrl = registrationRequest.datasetUrl,
                     idIsNumeric = registrationRequest.idIsNumeric,
-                    recommendedPollInterval = registrationRequest.recommendedPollInterval,
                     deletedItemDaysToLive = registrationRequest.deletedItemDaysToLive
                 });
             }
@@ -152,6 +126,5 @@ namespace AzureRpdeProxy
         public string datasetUrl { get; set; }
         public bool idIsNumeric { get; set; } = false;
         public int deletedItemDaysToLive { get; set; } = 7;  // 7 days is RPDE spec recommendation
-        public int recommendedPollInterval { get; set; } = 10;
     }
 }

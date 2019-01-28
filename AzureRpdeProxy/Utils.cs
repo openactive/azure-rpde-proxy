@@ -1,4 +1,5 @@
-﻿using System;
+﻿using Microsoft.Azure.ServiceBus.Core;
+using System;
 using System.Collections.Generic;
 using System.Configuration;
 using System.Linq;
@@ -14,9 +15,49 @@ namespace AzureRpdeProxy
         public const string PURGE_QUEUE_NAME = "purge";
         public const string REGISTRATION_QUEUE_NAME = "registration";
 
+        // Note all ingested IDs are URL Encoded, so this ID will never conflict with a real ID
+        public const string LAST_PAGE_ITEM_RESERVED_ID = "/@:********!!LASTPAGE!!********:@/";
+        public const long LAST_PAGE_ITEM_RESERVED_MODIFIED = long.MaxValue;
+
+        public const string RECOMMENDED_POLL_INTERVAL_HEADER = "x-recommended-poll-interval";
+
         public static string GetFeedUrl(string name)
         {
             return Environment.GetEnvironmentVariable("FeedBaseUrl") + "api/feeds/" + name;
+        }
+
+        public static async Task<List<FeedState>> GetFeedStateFromQueues(string name = null, bool ignoreRegistrationQueue = false)
+        {
+            string ServiceBusConnectionString = Environment.GetEnvironmentVariable("ServiceBusConnection");
+            var queueClients = new List<IMessageReceiver> {
+                new MessageReceiver(ServiceBusConnectionString, Utils.FEED_STATE_QUEUE_NAME),
+                new MessageReceiver(ServiceBusConnectionString, Utils.FEED_STATE_QUEUE_NAME + "/$DeadLetterQueue"),
+                new MessageReceiver(ServiceBusConnectionString, Utils.PURGE_QUEUE_NAME)
+            };
+            if (!ignoreRegistrationQueue) queueClients.Add(
+                new MessageReceiver(ServiceBusConnectionString, Utils.REGISTRATION_QUEUE_NAME)
+                );
+
+            List<FeedState> list = new List<FeedState>();
+
+            foreach (var client in queueClients)
+            {
+                List<FeedState> lastRetrievedList = null;
+                do
+                {
+                    lastRetrievedList = (await client.PeekAsync(100)).Select(m => FeedState.DecodeFromMessage(m)).ToList();
+                    list.AddRange(lastRetrievedList);
+                } while (lastRetrievedList.Count > 0);
+            }
+
+            if (name == null)
+            {
+                return list;
+            }
+            else
+            {
+                return list.Where(fs => fs.name == name).ToList();
+            }
         }
     }
 
