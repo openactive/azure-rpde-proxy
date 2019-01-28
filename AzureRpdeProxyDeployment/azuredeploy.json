@@ -68,7 +68,7 @@
     "functionAppName": "[parameters('endpointSubdomain')]",
     "storageAccountName": "[concat('openactive', uniqueString(resourceGroup().id))]",
     "computeMode": "[if(equals(parameters('scaling'),'Dynamic'), 'Dynamic', 'Shared')]",
-    "sku": "[if(equals(parameters('scaling'),'Dynamic'), 'Dynamic', 'Standard')]",
+    "sku": "[if(equals(parameters('scaling'),'Dynamic'), 'Dynamic', 'Basic')]",
     "alwaysOn": "[if(equals(parameters('scaling'),'Dynamic'), 'false', 'true')]",
     "feedBaseUrl": "[concat('https://', parameters('endpointSubdomain'), '.azurewebsites.net/')]",
     "defaultSASKeyName": "RootManageSharedAccessKey",
