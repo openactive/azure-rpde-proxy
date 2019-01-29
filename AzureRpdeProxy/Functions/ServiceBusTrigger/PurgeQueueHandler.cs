@@ -53,36 +53,52 @@ namespace AzureRpdeProxy
                 if (itemCount < 1000)
                 {
                     log.LogInformation($"Purge complete for '{feedStateItem.name}'");
-                   
-                    await messageReceiver.CompleteAsync(lockToken);
 
-                    // Attempt re-registration unless the proxy cache is being cleared
-                    if (Environment.GetEnvironmentVariable("ClearProxyCache")?.ToString() != "true")
+                    // Check lock exists, as close to a transaction as we can get
+                    if (await messageReceiver.RenewLockAsync(lockToken) != null)
                     {
-                        feedStateItem.ResetCounters();
-                        feedStateItem.totalPurgeCount++;
-                        await registrationQueueCollector.AddAsync(feedStateItem.EncodeToMessage(1));
-                    } else
-                    {
-                        log.LogWarning($"Purge Successfully Cleaned: {feedStateItem.name}");
+                        await messageReceiver.CompleteAsync(lockToken);
+
+                        // Attempt re-registration unless the proxy cache is being cleared
+                        if (Environment.GetEnvironmentVariable("ClearProxyCache")?.ToString() != "true")
+                        {
+                            feedStateItem.ResetCounters();
+                            feedStateItem.totalPurgeCount++;
+                            await registrationQueueCollector.AddAsync(feedStateItem.EncodeToMessage(1));
+                        }
+                        else
+                        {
+                            log.LogWarning($"Purge Successfully Cleaned: {feedStateItem.name}");
+                        }
                     }
-
                 } else
                 {
                     feedStateItem.purgedItems += itemCount;
-                    await messageReceiver.CompleteAsync(lockToken);
-                    await queueCollector.AddAsync(feedStateItem.EncodeToMessage(1));
+
+                    // Check lock exists, as close to a transaction as we can get
+                    if (await messageReceiver.RenewLockAsync(lockToken) != null)
+                    {
+                        await messageReceiver.CompleteAsync(lockToken);
+                        await queueCollector.AddAsync(feedStateItem.EncodeToMessage(1));
+                    }
                 }
             }
             catch (SqlException ex)
             {
                 log.LogError($"Error during DELETE_SOURCE stored procedure {ex.Number}: " + ex.ToString());
 
+                feedStateItem.lastError = ex.ToString();
+
                 feedStateItem.purgeRetries++;
                 var delaySeconds = (int)BigInteger.Pow(2, feedStateItem.purgeRetries);
                 log.LogWarning($"Unexpected error purging items: Retrying '{feedStateItem.name}' attempt {feedStateItem.purgeRetries} in {delaySeconds} seconds");
-                await messageReceiver.CompleteAsync(lockToken);
-                await queueCollector.AddAsync(feedStateItem.EncodeToMessage(delaySeconds));
+
+                // Check lock exists, as close to a transaction as we can get
+                if (await messageReceiver.RenewLockAsync(lockToken) != null)
+                {
+                    await messageReceiver.CompleteAsync(lockToken);
+                    await queueCollector.AddAsync(feedStateItem.EncodeToMessage(delaySeconds));
+                }
             }
 
             log.LogInformation($"Purge Trigger Complete: {feedStateItem.name}");

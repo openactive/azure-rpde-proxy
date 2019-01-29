@@ -26,8 +26,8 @@ namespace AzureRpdeProxy
 
         [FunctionName("RegistrationQueueHandler")]
         public static async Task Run([ServiceBusTrigger(Utils.REGISTRATION_QUEUE_NAME, Connection = "ServiceBusConnection")] Message message, MessageReceiver messageReceiver, string lockToken,
-            [ServiceBus(Utils.REGISTRATION_QUEUE_NAME, Connection = "ServiceBusConnection", EntityType = EntityType.Queue)] IAsyncCollector<Message> registrationQueueCollector,
-            [ServiceBus(Utils.FEED_STATE_QUEUE_NAME, Connection = "ServiceBusConnection", EntityType = EntityType.Queue)] IAsyncCollector<Message> queueCollector,
+            [ServiceBus(Utils.REGISTRATION_QUEUE_NAME, Connection = "ServiceBusConnection", EntityType = EntityType.Queue)] IAsyncCollector<Message> queueCollector,
+            [ServiceBus(Utils.FEED_STATE_QUEUE_NAME, Connection = "ServiceBusConnection", EntityType = EntityType.Queue)] IAsyncCollector<Message> feedStateQueueCollector,
             ILogger log)
         {
 
@@ -77,6 +77,8 @@ namespace AzureRpdeProxy
             }
             catch (Exception ex)
             {
+                feedStateItem.lastError = ex.ToString();
+
                 // Retry registration three times over 30 minutes, then fail
                 if (feedStateItem.registrationRetries > 3)
                 {
@@ -89,16 +91,16 @@ namespace AzureRpdeProxy
                     feedStateItem.registrationRetries++;
                     feedStateItem.totalErrors++;
                     log.LogWarning($"Registration error while validating first page. Retrying '{feedStateItem.name}' attempt {feedStateItem.registrationRetries}. Error retrieving '{feedStateItem.url}'. {ex.ToString()}");
-                    await messageReceiver.CompleteAsync(lockToken);
-                    await registrationQueueCollector.AddAsync(feedStateItem.EncodeToMessage(30));
+
+                    // Check lock exists, as close to a transaction as we can get
+                    if (await messageReceiver.RenewLockAsync(lockToken) != null)
+                    {
+                        await messageReceiver.CompleteAsync(lockToken);
+                        await queueCollector.AddAsync(feedStateItem.EncodeToMessage(30));
+                    }
                 }
                 return;
             }
-
-            // Restart the feed from the beginning
-            feedStateItem.nextUrl = feedStateItem.url;
-
-            feedStateItem.ResetCounters();
 
             // Write the successful registration to the feeds table
             using (var db = new Database(SqlUtils.SqlDatabaseConnectionString, DatabaseType.SqlServer2012, SqlClientFactory.Instance))
@@ -112,8 +114,17 @@ namespace AzureRpdeProxy
                 });
             }
 
-            await messageReceiver.CompleteAsync(lockToken);
-            await queueCollector.AddAsync(feedStateItem.EncodeToMessage(0));
+            // Restart the feed from the beginning
+            feedStateItem.nextUrl = feedStateItem.url;
+            feedStateItem.ResetCounters();
+
+            // Check lock exists, as close to a transaction as we can get
+            if (await messageReceiver.RenewLockAsync(lockToken) != null)
+            {
+                await messageReceiver.CompleteAsync(lockToken);
+                await feedStateQueueCollector.AddAsync(feedStateItem.EncodeToMessage(0));
+            }
+
             log.LogInformation($"Registration Trigger Promoting Feed: {feedStateItem.name}");
         }
 

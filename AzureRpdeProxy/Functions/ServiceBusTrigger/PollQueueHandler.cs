@@ -68,11 +68,17 @@ namespace AzureRpdeProxy
                 }
                 else
                 {
-                    log.LogWarning(expectedException.RenderMessageWithFullContext(feedStateItem, $"Retrying '{feedStateItem.name}' attempt {feedStateItem.retryStategy.RetryCount} in {feedStateItem.retryStategy.DelaySeconds} seconds."));
+                    feedStateItem.lastError = expectedException.RenderMessageWithFullContext(feedStateItem, $"Retrying '{feedStateItem.name}' attempt {feedStateItem.retryStategy.RetryCount} in {feedStateItem.retryStategy.DelaySeconds} seconds.");
+                    log.LogWarning(feedStateItem.lastError);
                     
                     var retryMsg = feedStateItem.EncodeToMessage(feedStateItem.retryStategy.DelaySeconds);
-                    await messageReceiver.CompleteAsync(lockToken);
-                    await queueCollector.AddAsync(retryMsg);
+
+                    // Check lock exists, as close to a transaction as we can get
+                    if (await messageReceiver.RenewLockAsync(lockToken) != null)
+                    {
+                        await messageReceiver.CompleteAsync(lockToken);
+                        await queueCollector.AddAsync(retryMsg);
+                    }
                 }
 
                 return;
@@ -87,6 +93,7 @@ namespace AzureRpdeProxy
                 feedStateItem.lastPageReads = 0;
             }
             feedStateItem.retryStategy = null;
+            feedStateItem.lastError = null;
             feedStateItem.totalPagesRead++;
             feedStateItem.totalItemsRead += sourcePage.Content.items.Count;
             feedStateItem.nextUrl = sourcePage.Content.next;
@@ -121,8 +128,13 @@ namespace AzureRpdeProxy
             //    await queueCollector.AddAsync(newMessage);
             //    scope.Complete(); // declare the transaction done
             // }
-            await messageReceiver.CompleteAsync(lockToken);
-            await queueCollector.AddAsync(newMessage);
+
+            // Check lock exists, as close to a transaction as we can get
+            if (await messageReceiver.RenewLockAsync(lockToken) != null)
+            {
+                await messageReceiver.CompleteAsync(lockToken);
+                await queueCollector.AddAsync(newMessage);
+            }
         }
 
         

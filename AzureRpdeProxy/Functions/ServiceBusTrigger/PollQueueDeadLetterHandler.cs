@@ -12,17 +12,23 @@ namespace AzureRpdeProxy
     {
         [FunctionName("PollQueueDeadLetterHandler")]
         public static async Task Run([ServiceBusTrigger(Utils.FEED_STATE_QUEUE_NAME + "/$DeadLetterQueue", Connection = "ServiceBusConnection")] Message message, MessageReceiver messageReceiver, string lockToken,
-            [ServiceBus(Utils.PURGE_QUEUE_NAME, Connection = "ServiceBusConnection", EntityType = EntityType.Queue)] IAsyncCollector<Message> queueCollector,
+            [ServiceBus(Utils.PURGE_QUEUE_NAME, Connection = "ServiceBusConnection", EntityType = EntityType.Queue)] IAsyncCollector<Message> purgeQueueCollector,
             ILogger log)
         {
-
             var feedStateItem = FeedState.DecodeFromMessage(message);
 
-            // Dead letter queue from PollFeed simply triggers a purge
-
             log.LogInformation($"DeadLetterQueue Trigger Started: {feedStateItem.name}");
-            await messageReceiver.CompleteAsync(lockToken);
-            await queueCollector.AddAsync(feedStateItem.EncodeToMessage(0));
+
+            // Dead letter queue from PollFeed simply triggers a purge
+            feedStateItem.ResetCounters();
+            
+            // Check lock exists, as close to a transaction as we can get
+            if (await messageReceiver.RenewLockAsync(lockToken) != null)
+            {
+                await messageReceiver.CompleteAsync(lockToken);
+                await purgeQueueCollector.AddAsync(feedStateItem.EncodeToMessage(0));
+            }
+
             log.LogInformation($"DeadLetterQueue Trigger Complete: {feedStateItem.name}");
         }
     }

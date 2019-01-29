@@ -186,7 +186,7 @@
             "requiresSession": "false",
             "defaultMessageTimeToLive": "P14D",
             "deadLetteringOnMessageExpiration": "false",
-            "maxDeliveryCount": "10",
+            "maxDeliveryCount": "50",
             "enablePartitioning": "false",
             "enableExpress": "false"
           }

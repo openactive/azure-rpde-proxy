@@ -49,6 +49,7 @@ namespace AzureRpdeProxy
 
         public Guid id { get; set; } = Guid.NewGuid();
         public int deletedItemDaysToLive { get; set; } = 7; // 7 days is RPDE spec recommendation
+        public string lastError { get; set; }
 
         public void ResetCounters()
         {
@@ -60,6 +61,7 @@ namespace AzureRpdeProxy
             purgedItems = 0;
             registrationRetries = 0;
             retryStategy = null;
+            lastError = null;
         }
     }
 
