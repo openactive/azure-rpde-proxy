@@ -55,7 +55,10 @@ namespace AzureRpdeProxy
                 } while (lastRetrievedList.Count > 0);
             }
             
-            return new JsonResult(list.OrderBy(x => x.feedState.name).ToList());
+            return new JsonResult(list.OrderBy(x => x.feedState.name).ToList(), new JsonSerializerSettings
+            {
+                Formatting = Formatting.Indented
+            });
         }
     }
 }
