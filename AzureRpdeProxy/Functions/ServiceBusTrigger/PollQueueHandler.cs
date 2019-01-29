@@ -38,262 +38,293 @@ namespace AzureRpdeProxy
         {
             var feedStateItem = FeedState.DecodeFromMessage(message);
 
-            log.LogInformation($"PollFeed queue trigger function processed message: {feedStateItem?.nextUrl}");
+            log.LogInformation($"PollQueueHandler queue trigger function processed message: {feedStateItem?.nextUrl}");
 
             // Increment poll requests before anything else
             feedStateItem.totalPollRequests++;
             feedStateItem.dateModified = DateTime.Now;
 
-            int delaySeconds = 0;
-            bool isLastPage = false;
+            SourcePage sourcePage;
 
-            // Store headers of last page to be passed on
-            DateTimeOffset? expires = null;
-            TimeSpan? maxAge = null;
-            int? recommendedPollInterval = null;
-
-            // Attempt to get next page
-            RpdeFeed data = null;
             try
             {
-                var sw = new Stopwatch();
-                sw.Start();
-
-                var result = await httpClient.GetAsync(feedStateItem.nextUrl);
-                var dateTimeRecieved = DateTimeOffset.UtcNow;
-
-                if (result.StatusCode == HttpStatusCode.Unauthorized)
-                {
-                    // Deadletter on 401 (OWS key has changed)
-                    log.LogWarning($"Feed attempting poll returned 401 and will be purged: '{feedStateItem.name}'.");
-                    delaySeconds = -1;
-                }
-                else
-                {
-                    // Store headers for use with last page
-                    maxAge = result.Headers.CacheControl.MaxAge;
-                    if (result.Headers.TryGetValues(Utils.RECOMMENDED_POLL_INTERVAL_HEADER, out IEnumerable<string> recommendedPollIntervalString)) {
-                        if (Int32.TryParse(recommendedPollIntervalString.FirstOrDefault(), out int intervalNumeric))
-                        {
-                            recommendedPollInterval = intervalNumeric;
-                        }
-                    }
-
-                    // The Expires from a source may be wildly inaccurate if the source server does not synchronize time with an external NTP server
-                    // The date of the source server is compared with the date at the proxy to discern the intended expiry.
-                    // If the suggested expiry is too short, the minimum is used.
-                    expires = AdjustAndValidateExpires(result.Content.Headers.Expires, result.Headers.Date, dateTimeRecieved, recommendedPollInterval);
-
-                    data = JsonConvert.DeserializeObject<RpdeFeed>(await result.Content.ReadAsStringAsync());
-                }
-
-                sw.Stop();
-                log.LogWarning($"FETCH TIMER {feedStateItem.name}: {sw.ElapsedMilliseconds} ms to fetch {data?.items?.Count ?? 0} items.");
+                sourcePage = await ExecutePoll(feedStateItem.name, feedStateItem.nextUrl, feedStateItem.lastPageReads == 0, feedStateItem.deletedItemDaysToLive, log);
             }
             catch (Exception ex)
             {
-                log.LogError(ex, "Error retrieving page: " + feedStateItem.nextUrl);
+                var expectedException = ExpectedPollException.ExpectTheUnexpected(ex);
+                feedStateItem.retryStategy = new RetryStrategy(expectedException, feedStateItem?.retryStategy);
+                feedStateItem.totalErrors++;
+
+                if (feedStateItem.retryStategy.DeadLetter)
+                {
+                    log.LogError(expectedException.RenderMessageWithFullContext(feedStateItem, $"DEAD-LETTERING: '{feedStateItem.name}'."));
+                    await messageReceiver.DeadLetterAsync(lockToken);
+                }
+                if (feedStateItem.retryStategy.DropImmediately)
+                {
+                    log.LogWarning(expectedException.RenderMessageWithFullContext(feedStateItem, $"Dropped message for '{feedStateItem.name}'."));
+                    await messageReceiver.CompleteAsync(lockToken);
+                }
+                else
+                {
+                    log.LogWarning(expectedException.RenderMessageWithFullContext(feedStateItem, $"Retrying '{feedStateItem.name}' attempt {feedStateItem.retryStategy.RetryCount} in {feedStateItem.retryStategy.DelaySeconds} seconds."));
+                    
+                    var retryMsg = feedStateItem.EncodeToMessage(feedStateItem.retryStategy.DelaySeconds);
+                    await messageReceiver.CompleteAsync(lockToken);
+                    await queueCollector.AddAsync(retryMsg);
+                }
+
+                return;
             }
 
-            if (delaySeconds == -1)
+            // Update counters on success
+            if (sourcePage.IsLastPage)
             {
-                // Do nothing to immediately deadletter this response
+                feedStateItem.lastPageReads++;
+            } else
+            {
+                feedStateItem.lastPageReads = 0;
             }
-            // check for valid RPDE base properties
-            else if (data?.license == Utils.CC_BY_LICENSE && data?.next != null && data?.items != null)
+            feedStateItem.retryStategy = null;
+            feedStateItem.totalPagesRead++;
+            feedStateItem.totalItemsRead += sourcePage.Content.items.Count;
+            feedStateItem.nextUrl = sourcePage.Content.next;
+
+            Message newMessage;
+            // If immediate poll is specified for last page, respect any Expires header provided for throttling
+            if (sourcePage.IsLastPage)
             {
-                var cacheItems = data.items.Select(item => item.ConvertToStringId()).Select(item => new CachedRpdeItem
+                if (sourcePage.LastPageDetails?.Expires != null)
                 {
-                    id = item.id,
-                    modified = item.modified,
-                    deleted = item.state == "deleted",
-                    // Note must be manually serialised to pass to stored procedure, which ignores object annotations
-                    data = JsonConvert.SerializeObject(item, Newtonsoft.Json.Formatting.None,
+                    newMessage = feedStateItem.EncodeToMessage(sourcePage.LastPageDetails.Expires);
+                }
+                else if (sourcePage.LastPageDetails?.MaxAge != null)
+                {
+                    newMessage = feedStateItem.EncodeToMessage((int)sourcePage.LastPageDetails.MaxAge?.TotalSeconds);
+                } else
+                {
+                    // Default last page polling interval
+                    newMessage = feedStateItem.EncodeToMessage(Utils.DEFAULT_POLL_INTERVAL);
+                }
+            } else
+            {
+                // If not last page, get the next page immediately
+                newMessage = feedStateItem.EncodeToMessage(0);
+            }
+
+            // These two operations should be in a transaction, but to save cost they ordered so that a failure will result in the polling stopping,
+            // and the ResyncDroppedFeeds timer trigger will hence be required to ensure the system is still robust
+            // using (var scope = new TransactionScope(TransactionScopeAsyncFlowOption.Enabled))
+            // {
+            //    await messageReceiver.CompleteAsync(lockToken);
+            //    await queueCollector.AddAsync(newMessage);
+            //    scope.Complete(); // declare the transaction done
+            // }
+            await messageReceiver.CompleteAsync(lockToken);
+            await queueCollector.AddAsync(newMessage);
+        }
+
+        
+        private static async Task<SourcePage> ExecutePoll(string name, string nextUrl, bool IsFirstLastPage, int deletedItemDaysToLive, ILogger log)
+        {
+            var sw = new Stopwatch();
+
+            if (Environment.GetEnvironmentVariable("ClearProxyCache")?.ToString() == "true")
+            {
+                throw new ExpectedPollException(ExpectedErrorCategory.ForceClearProxyCache);
+            }
+
+            sw.Start();
+            var sourcePage = await GetSourcePage(nextUrl);
+            sw.Stop();
+            log.LogWarning($"FETCH TIMER {name}: {sw.ElapsedMilliseconds} ms to fetch {sourcePage?.Content?.items?.Count ?? 0} items.");
+
+            var cacheItems = ConvertToCachedRpdeItems(sourcePage.Content, name, deletedItemDaysToLive);
+
+            // Only write to the database on the first last page read
+            if (sourcePage.IsLastPage && IsFirstLastPage)
+            {
+                // Add headers into data of dummy last item so FeedPage does not need an additional database query
+                // to access them
+                cacheItems.Add(LastPageCachedRpdeItem(sourcePage.LastPageDetails, name));
+            }
+
+            // Only write to database if there are items to write
+            if (cacheItems.Count > 0)
+            {
+                sw.Start();
+                var rowsUpdated = await WriteCachedRpdeItemsToDatabase(cacheItems);
+                sw.Stop();
+                log.LogWarning($"POLL TIMER {name}: {sw.ElapsedMilliseconds} ms to import {cacheItems.Count} items to database (writing {rowsUpdated} rows).");
+            }
+
+            return sourcePage;
+        }
+   
+        private static async Task<int> WriteCachedRpdeItemsToDatabase(List<CachedRpdeItem> cacheItems)
+        {
+            try
+            {
+                int rowsUpdated = 0;
+
+                using (SqlConnection connection = new SqlConnection(SqlUtils.SqlDatabaseConnectionString))
+                {
+                    connection.Open();
+
+                    DataTable table = new DataTable();
+                    table.Columns.Add("source", typeof(string));
+                    table.Columns.Add("id", typeof(string));
+                    table.Columns.Add("modified", typeof(long));
+                    table.Columns.Add("kind", typeof(string));
+                    table.Columns.Add("deleted", typeof(bool));
+                    table.Columns.Add("data", typeof(string));
+                    table.Columns.Add("expiry", typeof(DateTime));
+                    foreach (var item in cacheItems)
+                    {
+                        table.Rows.Add(item.source, item.id, item.modified, item.kind, item.deleted, item.data, item.expiry);
+                    }
+
+                    SqlCommand cmd = new SqlCommand("UPDATE_ITEM_BATCH", connection);
+                    cmd.CommandType = CommandType.StoredProcedure;
+
+                    cmd.Parameters.Add(
+                        new SqlParameter()
+                        {
+                            ParameterName = "@Tvp",
+                            SqlDbType = SqlDbType.Structured,
+                            TypeName = "ItemTableType",
+                            Value = table,
+                        });
+
+                    rowsUpdated = await cmd.ExecuteNonQueryAsync();
+                }
+
+                // If no rows are updated, message must be a duplicate, as previous message did the work
+                if (rowsUpdated == 0 && cacheItems.Count > 0)
+                {
+                    throw new ExpectedPollException(ExpectedErrorCategory.DuplicateMessageDetected);
+                }
+
+                return rowsUpdated;
+            }
+            catch (SqlException ex)
+            {
+                if (SqlUtils.SqlTransientErrorNumbers.Contains(ex.Number) || ex.Message.Contains("timeout", StringComparison.InvariantCultureIgnoreCase))
+                {
+                    throw new ExpectedPollException(ExpectedErrorCategory.SqlTransientError, ex);
+                }
+                else
+                {
+                    throw new ExpectedPollException(ExpectedErrorCategory.SqlUnexpectedError, ex);
+                }
+            }
+            catch (Exception ex)
+            {
+                throw new ExpectedPollException(ExpectedErrorCategory.UnexpectedErrorDuringDatabaseWrite, ex);
+            }
+        }
+
+        private static CachedRpdeItem LastPageCachedRpdeItem(LastItem lastItem, string source)
+        {
+            return new CachedRpdeItem
+            {
+                id = Utils.LAST_PAGE_ITEM_RESERVED_ID,
+                modified = Utils.LAST_PAGE_ITEM_RESERVED_MODIFIED,
+                deleted = false,
+                data = JsonConvert.SerializeObject(lastItem, Newtonsoft.Json.Formatting.None,
+                new JsonSerializerSettings
+                {
+                    NullValueHandling = NullValueHandling.Ignore
+                }),
+                kind = string.Empty,
+                source = source,
+                expiry = null
+            };
+        }
+
+        private static List<CachedRpdeItem> ConvertToCachedRpdeItems(RpdeFeed data, string source, int deletedItemDaysToLive)
+        {
+            return data.items.Select(item => item.ConvertToStringId()).Select(item => new CachedRpdeItem
+            {
+                id = item.id,
+                modified = item.modified,
+                deleted = item.state == "deleted",
+                // Note must be manually serialised to pass to stored procedure, which ignores object annotations
+                data = JsonConvert.SerializeObject(item, Newtonsoft.Json.Formatting.None,
                     new JsonSerializerSettings
                     {
                         NullValueHandling = NullValueHandling.Ignore
                     }),
-                    kind = item.kind,
-                    source = feedStateItem.name,
-                    expiry = item.state == "deleted" ? DateTime.UtcNow.AddDays(feedStateItem.deletedItemDaysToLive) : (DateTime?)null
-                }).ToList();
+                kind = item.kind,
+                source = source,
+                expiry = item.state == "deleted" ? DateTime.UtcNow.AddDays(deletedItemDaysToLive) : (DateTime?)null
+            }).ToList();
+        }
 
-                if (cacheItems.Count == 0 && feedStateItem.nextUrl == data.next)
-                {
-                    isLastPage = true;
-
-                    if (feedStateItem.lastPageReads == 0)
-                    {
-                        // Add headers into data of dummy last item so FeedPage does not need an additional database query
-                        // to access them
-                        cacheItems.Add(new CachedRpdeItem
-                        {
-                            id = Utils.LAST_PAGE_ITEM_RESERVED_ID,
-                            modified = Utils.LAST_PAGE_ITEM_RESERVED_MODIFIED,
-                            deleted = false,
-                            data = JsonConvert.SerializeObject(new LastItem
-                            {
-                                Expires = expires,
-                                MaxAge = maxAge,
-                                RecommendedPollInterval = recommendedPollInterval
-
-                            }, Newtonsoft.Json.Formatting.None,
-                            new JsonSerializerSettings
-                            {
-                                NullValueHandling = NullValueHandling.Ignore
-                            }),
-                            kind = string.Empty,
-                            source = feedStateItem.name,
-                            expiry = null
-                        });
-                    }
-
-                    feedStateItem.lastPageReads++;
-                    feedStateItem.pollRetries = 0;
-                }
-                else
-                {
-                    feedStateItem.lastPageReads = 0;
-                    feedStateItem.totalPagesRead++;
-                    feedStateItem.totalItemsRead += cacheItems.Count;
-                    feedStateItem.nextUrl = data.next;
-                    feedStateItem.pollRetries = 0;
-                }
-
-                // Only write to database if there are items to write
-                if (cacheItems.Count > 0)
-                {
-                    try
-                    {
-                        var sw = new Stopwatch();
-                        sw.Start();
-
-                        int rowsUpdated = 0;
-
-                        using (SqlConnection connection = new SqlConnection(SqlUtils.SqlDatabaseConnectionString))
-                        {
-                            connection.Open();
-
-                            DataTable table = new DataTable();
-                            table.Columns.Add("source", typeof(string));
-                            table.Columns.Add("id", typeof(string));
-                            table.Columns.Add("modified", typeof(long));
-                            table.Columns.Add("kind", typeof(string));
-                            table.Columns.Add("deleted", typeof(bool));
-                            table.Columns.Add("data", typeof(string));
-                            table.Columns.Add("expiry", typeof(DateTime));
-                            foreach (var item in cacheItems)
-                            {
-                                table.Rows.Add(item.source, item.id, item.modified, item.kind, item.deleted, item.data, item.expiry);
-                            }
-
-                            SqlCommand cmd = new SqlCommand("UPDATE_ITEM_BATCH", connection);
-                            cmd.CommandType = CommandType.StoredProcedure;
-
-                            cmd.Parameters.Add(
-                                new SqlParameter()
-                                {
-                                    ParameterName = "@Tvp",
-                                    SqlDbType = SqlDbType.Structured,
-                                    TypeName = "ItemTableType",
-                                    Value = table,
-                                });
-
-                            rowsUpdated = await cmd.ExecuteNonQueryAsync();
-                        }
-                        
-                        // If no rows are updated, message must be a duplicate, as previous message did the work
-                        if (rowsUpdated == 0 && !isLastPage)
-                        {
-                            log.LogWarning($"DUPLICATE MESSAGE DROPPED {feedStateItem.name}: {feedStateItem.id}");
-                            await messageReceiver.CompleteAsync(lockToken);
-                            return;
-                        }
-
-                        sw.Stop();
-                        log.LogWarning($"POLL TIMER {feedStateItem.name}: {sw.ElapsedMilliseconds} ms to import {cacheItems.Count} items.");
-                    }
-                    catch (SqlException ex)
-                    {
-                        if (SqlUtils.SqlTransientErrorNumbers.Contains(ex.Number))
-                        {
-                            log.LogWarning($"Throttle on PollFeed, retry after {SqlUtils.SqlRetrySecondsRecommendation} seconds.");
-                            delaySeconds = SqlUtils.SqlRetrySecondsRecommendation;
-                            feedStateItem.pollRetries = 0;
-                        }
-                        else
-                        {
-                            feedStateItem.pollRetries++;
-                            feedStateItem.totalErrors++;
-                            delaySeconds = (int)BigInteger.Pow(2, feedStateItem.pollRetries);
-                            log.LogWarning($"Error writing page to SQL Server {ex.Number}: Retrying '{feedStateItem.name}' attempt {feedStateItem.pollRetries} in {delaySeconds} seconds. Error: " + ex.ToString());
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        feedStateItem.pollRetries++;
-                        feedStateItem.totalErrors++;
-                        delaySeconds = (int)BigInteger.Pow(2, feedStateItem.pollRetries);
-                        log.LogWarning($"Error writing page to SQL Server: Retrying '{feedStateItem.name}' attempt {feedStateItem.pollRetries} in {delaySeconds} seconds. Error: " + ex.ToString());
-                    }
-                }
-            }
-            else
+        private static async Task<SourcePage> GetSourcePage(string nextUrl)
+        {
+            // Attempt to get next page
+            SourcePage sourcePage = new SourcePage();
+            try
             {
-                if (feedStateItem.pollRetries > 15) // Retry with exponential backoff for 18 hours, then fail and purge regardless of the error type
-                {
-                    log.LogError($"Error retrieving page: DEAD-LETTERING '{feedStateItem.name}'");
+                var reponse = await httpClient.GetAsync(nextUrl);
 
-                    delaySeconds = -1;
-                }
-                else
+                // Record time of response, to help calculate last page details
+                var dateTimeReceived = DateTimeOffset.UtcNow;
+
+                if (reponse.StatusCode == HttpStatusCode.Unauthorized)
                 {
-                    feedStateItem.pollRetries++;
-                    feedStateItem.totalErrors++;
-                    delaySeconds = (int)BigInteger.Pow(2, feedStateItem.pollRetries);
-                    log.LogWarning($"Error retrieving page: Retrying '{feedStateItem.name}' attempt {feedStateItem.pollRetries} in {delaySeconds} seconds");
+                    // 401 most likely indicates OWS key has changed
+                    throw new ExpectedPollException(ExpectedErrorCategory.Unauthorised401);
+                }
+
+                // Attempt to Deserialize
+                var data = JsonConvert.DeserializeObject<RpdeFeed>(await reponse.Content.ReadAsStringAsync());
+
+                if (data?.license != Utils.CC_BY_LICENSE || data?.next == null || data?.items == null)
+                {
+                    // Invalid RPDE Page indicates error that should be retried
+                    throw new ExpectedPollException(ExpectedErrorCategory.InvalidRPDEPage);
+                }
+
+                // Only store last page details if this is the last page
+                if (data?.items?.Count == 0 && data?.next == nextUrl)
+                {
+                    sourcePage.LastPageDetails = GetLastPageDetailsFromHeader(reponse, dateTimeReceived);
+                }
+
+                sourcePage.Content = data;
+
+                return sourcePage;
+            }
+            catch (Exception ex)
+            {
+                throw new ExpectedPollException(ExpectedErrorCategory.PageFetchError, ex);
+            }
+        }
+
+        private static LastItem GetLastPageDetailsFromHeader(HttpResponseMessage response, DateTimeOffset dateTimeReceived)
+        {
+            int? recommendedPollInterval = null;
+            if (response.Headers.TryGetValues(Utils.RECOMMENDED_POLL_INTERVAL_HEADER, out IEnumerable<string> recommendedPollIntervalString))
+            {
+                if (Int32.TryParse(recommendedPollIntervalString.FirstOrDefault(), out int intervalNumeric))
+                {
+                    recommendedPollInterval = intervalNumeric;
                 }
             }
 
-            // Move all to DeadLetter if ClearProxyCache is enabled
-            if (delaySeconds < 0 || Environment.GetEnvironmentVariable("ClearProxyCache")?.ToString() == "true")
+            return new LastItem
             {
-                await messageReceiver.DeadLetterAsync(lockToken);
-            } else
-            {
-                Message newMessage;
-                // If immediate poll is specified for last page, respect any Expires header provided for throttling
-                if (delaySeconds == 0 && isLastPage)
-                {
-                    if (expires != null)
-                    {
-                        newMessage = feedStateItem.EncodeToMessage(expires);
-                    }
-                    else if (maxAge != null)
-                    {
-                        newMessage = feedStateItem.EncodeToMessage((int)maxAge?.TotalSeconds);
-                    } else
-                    {
-                        // Default last page polling interval
-                        newMessage = feedStateItem.EncodeToMessage(Utils.DEFAULT_POLL_INTERVAL);
-                    }
-                } else
-                {
-                    // If not last page, follow delaySeconds
-                    newMessage = feedStateItem.EncodeToMessage(delaySeconds);
-                }
-                
-                // These two operations should be in a transaction, but to save cost they ordered so that a failure will result in the polling stopping,
-                // and a reregistration being required to restart it (24 hrs later)
-                //using (var scope = new TransactionScope(TransactionScopeAsyncFlowOption.Enabled))
-                //{
-                await messageReceiver.CompleteAsync(lockToken);
-                await queueCollector.AddAsync(newMessage);
-                    
-                //    scope.Complete(); // declare the transaction done
-                //}
-                
-            }
+                // Store headers for use with last page
+                MaxAge = response.Headers.CacheControl.MaxAge,
+                RecommendedPollInterval = recommendedPollInterval,
+                // The Expires from a source may be wildly inaccurate if the source server does not synchronize time with an external NTP server
+                // The date of the source server is compared with the date at the proxy to discern the intended expiry.
+                // If the suggested expiry is too short, the minimum is used.
+                Expires = AdjustAndValidateExpires(response.Content.Headers.Expires, response.Headers.Date, dateTimeReceived, recommendedPollInterval)
+            };
         }
 
         private static DateTimeOffset? AdjustAndValidateExpires(DateTimeOffset? expires, DateTimeOffset? dateTimeSent, DateTimeOffset dateTimeRecieved, int? recommendedPollIntervalSeconds)
@@ -334,5 +365,132 @@ namespace AzureRpdeProxy
                 return dateTimeRecieved.Add(timespanUntilExpiry);
             }
         }
+    }
+
+    public class SourcePage
+    {
+        public bool IsLastPage
+        {
+            get { return LastPageDetails != null; }
+        }
+        public LastItem LastPageDetails { get; set; }
+        public RpdeFeed Content { get; set; }
+    }
+
+    public enum ExpectedErrorCategory
+    {
+        Unauthorised401,
+        InvalidRPDEPage,
+        PageFetchError,
+        DuplicateMessageDetected,
+        SqlTransientError,
+        SqlUnexpectedError,
+        UnexpectedErrorDuringDatabaseWrite,
+        ForceClearProxyCache,
+        UnexpectedError
+    }
+
+    public class ExpectedPollException : Exception
+    {
+        public static ExpectedPollException ExpectTheUnexpected(Exception ex)
+        {
+            return ex as ExpectedPollException ?? new ExpectedPollException(ExpectedErrorCategory.UnexpectedError, ex);
+        }
+
+        public ExpectedPollException(ExpectedErrorCategory errorCategory, Exception innerException = null) : base("ExpectedPollException was thrown without rendering", innerException)
+        {
+            this.ErrorCategory = errorCategory;
+        }
+           
+        public ExpectedErrorCategory ErrorCategory { get; set; }
+
+        public string RenderMessageWithFullContext(FeedState feedStateItem, string retryContext)
+        {
+            return $"{RenderMessageWithContext(feedStateItem)}. {retryContext} {this.InnerException?.ToString()}";
+        }
+
+        public string RenderMessageWithContext(FeedState feedStateItem)
+        {
+            switch (ErrorCategory)
+            {
+                case ExpectedErrorCategory.Unauthorised401:
+                    return $"Feed attempting poll returned 401 and will be purged: '{feedStateItem.name}'.";
+                case ExpectedErrorCategory.DuplicateMessageDetected:
+                    return $"Duplicate message detected for '{feedStateItem.name}': {feedStateItem.id}, and will be dropped.";
+                case ExpectedErrorCategory.InvalidRPDEPage:
+                    return $"Invalid RPDE page received for '{feedStateItem.name}': {feedStateItem.nextUrl}";
+                case ExpectedErrorCategory.PageFetchError:
+                    return $"Error retrieving page for '{feedStateItem.name}': {feedStateItem.nextUrl}";
+                case ExpectedErrorCategory.SqlTransientError:
+                    return $"Throttle on PollFeed, retry after {SqlUtils.SqlRetrySecondsRecommendation} seconds.";
+                case ExpectedErrorCategory.SqlUnexpectedError:
+                    return $"SQL Error {(this.InnerException as SqlException)?.Number} writing page to SQL Server.";
+                case ExpectedErrorCategory.UnexpectedErrorDuringDatabaseWrite:
+                    return $"Unexpected error writing page to SQL Server.";
+                case ExpectedErrorCategory.UnexpectedError:
+                    return $"Unexpected error.";
+                case ExpectedErrorCategory.ForceClearProxyCache:
+                    return $"ClearProxyCache has been set in App Config. Deadlettering all feeds.";
+                default:
+                    return $"Unexpected error for '{feedStateItem.name}': {feedStateItem.nextUrl}";
+            }
+        }
+    }
+
+    public class RetryStrategy
+    {
+        public RetryStrategy(ExpectedPollException ex, RetryStrategy lastRetryStategy)
+        {
+            this.ErrorCategory = ex.ErrorCategory;
+
+            if (this.ErrorCategory != lastRetryStategy?.ErrorCategory)
+            {
+                this.RetryCount = 0;
+            }
+            else
+            {
+                this.RetryCount = (lastRetryStategy?.RetryCount ?? 0) + 1;
+            }
+
+            switch (this.ErrorCategory)
+            {
+                case ExpectedErrorCategory.Unauthorised401:
+                case ExpectedErrorCategory.DuplicateMessageDetected:
+                    this.DropImmediately = true;
+                    break;
+                case ExpectedErrorCategory.InvalidRPDEPage:
+                case ExpectedErrorCategory.PageFetchError:
+                case ExpectedErrorCategory.UnexpectedErrorDuringDatabaseWrite:
+                case ExpectedErrorCategory.UnexpectedError:
+                    // Exponential backoff
+                    if (this.RetryCount > 15)
+                    {
+                        this.DeadLetter = true;
+                    } else
+                    {
+                        this.DelaySeconds = (int)BigInteger.Pow(2, this.RetryCount);
+                    }
+                    break;
+                case ExpectedErrorCategory.ForceClearProxyCache:
+                    this.DeadLetter = true;
+                    break;
+                case ExpectedErrorCategory.SqlTransientError:
+                    this.DelaySeconds = SqlUtils.SqlRetrySecondsRecommendation;
+                    break;
+                default:
+                    throw new InvalidOperationException("Unknown Retry Strategy");
+            }
+        }
+        
+        // String useful for status endpoint output
+        public string ErrorCategoryInfo
+        {
+            get { return ErrorCategory.ToString(); }
+        }
+        public ExpectedErrorCategory ErrorCategory;
+        public bool DeadLetter { get; set; }
+        public bool DropImmediately { get; set; }
+        public int DelaySeconds { get; set; }
+        public int RetryCount { get; set; }
     }
 }

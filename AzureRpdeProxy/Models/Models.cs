@@ -41,11 +41,12 @@ namespace AzureRpdeProxy
         public long totalPollRequests { get; set; } = 0;
         public long totalErrors { get; set; } = 0;
         public long lastPageReads { get; set; } = 0;
-        public int pollRetries { get; set; } = 0;
+        public int registrationRetries { get; set; } = 0;
         public int purgeRetries { get; set; } = 0;
         public long purgedItems { get; set; } = 0;
         public long totalPurgeCount { get; set; } = -1;
-        
+        public RetryStrategy retryStategy { get; set; }
+
         public Guid id { get; set; } = Guid.NewGuid();
         public int deletedItemDaysToLive { get; set; } = 7; // 7 days is RPDE spec recommendation
 
@@ -55,9 +56,10 @@ namespace AzureRpdeProxy
             totalItemsRead = 0;
             totalPollRequests = 0;
             totalErrors = 0;
-            pollRetries = 0;
             purgeRetries = 0;
             purgedItems = 0;
+            registrationRetries = 0;
+            retryStategy = null;
         }
     }
 

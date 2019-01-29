@@ -78,7 +78,7 @@ namespace AzureRpdeProxy
             catch (Exception ex)
             {
                 // Retry registration three times over 30 minutes, then fail
-                if (feedStateItem.pollRetries > 3)
+                if (feedStateItem.registrationRetries > 3)
                 {
                     log.LogError($"Registration error while validating first page. Dropping feed. Error retrieving '{feedStateItem.url}'. {ex.ToString()}");
                     DeleteFeedFromDatabase(feedStateItem.name);
@@ -86,9 +86,9 @@ namespace AzureRpdeProxy
                 }
                 else
                 {
-                    feedStateItem.pollRetries++;
+                    feedStateItem.registrationRetries++;
                     feedStateItem.totalErrors++;
-                    log.LogWarning($"Registration error while validating first page. Retrying '{feedStateItem.name}' attempt {feedStateItem.pollRetries}. Error retrieving '{feedStateItem.url}'. {ex.ToString()}");
+                    log.LogWarning($"Registration error while validating first page. Retrying '{feedStateItem.name}' attempt {feedStateItem.registrationRetries}. Error retrieving '{feedStateItem.url}'. {ex.ToString()}");
                     await messageReceiver.CompleteAsync(lockToken);
                     await registrationQueueCollector.AddAsync(feedStateItem.EncodeToMessage(30));
                 }
