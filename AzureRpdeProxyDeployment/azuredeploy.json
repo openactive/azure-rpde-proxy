@@ -16,7 +16,7 @@
         "description": "The branch of the GitHub repository to use."
       }
     },
-    "endpointSubdomain": {
+    "globallyUniqueEndpointSubdomain": {
       "type": "string",
       "defaultValue": "lmscloud-openactive-proxy",
       "metadata": {
@@ -65,12 +65,12 @@
     "sqlserverAdminLogin": "[concat('l', uniqueString(resourceGroup().id, '9A08DDB9-95A1-495F-9263-D89738ED4205'))]",
     "sqlserverAdminLoginPassword": "[concat('P', uniqueString(resourceGroup().id, deployment().name, '224F5A8B-51DB-46A3-A7C8-59B0DD584A41'), 'x', '!')]",
     "databaseName": "[concat('openactive-proxy-', parameters('resourcePostfix'))]",
-    "functionAppName": "[parameters('endpointSubdomain')]",
+    "functionAppName": "[parameters('globallyUniqueEndpointSubdomain')]",
     "storageAccountName": "[concat('openactive', uniqueString(resourceGroup().id))]",
     "computeMode": "[if(equals(parameters('scaling'),'Dynamic'), 'Dynamic', 'Shared')]",
     "sku": "[if(equals(parameters('scaling'),'Dynamic'), 'Dynamic', 'Basic')]",
     "alwaysOn": "[if(equals(parameters('scaling'),'Dynamic'), 'false', 'true')]",
-    "feedBaseUrl": "[concat('https://', parameters('endpointSubdomain'), '.azurewebsites.net/')]",
+    "feedBaseUrl": "[concat('https://', parameters('globallyUniqueEndpointSubdomain'), '.azurewebsites.net/')]",
     "defaultSASKeyName": "RootManageSharedAccessKey",
     "authRuleResourceId": "[resourceId('Microsoft.ServiceBus/namespaces/authorizationRules', variables('serviceBusNamespaceName'), variables('defaultSASKeyName'))]",
     "serviceBusQueueNamePurge": "purge",

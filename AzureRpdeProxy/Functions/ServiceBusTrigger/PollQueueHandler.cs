@@ -451,6 +451,10 @@ namespace AzureRpdeProxy
 
     public class RetryStrategy
     {
+        // Default constructor used when deserialising from queue
+        [JsonConstructor]
+        public RetryStrategy() { }
+
         public RetryStrategy(ExpectedPollException ex, RetryStrategy lastRetryStategy)
         {
             this.ErrorCategory = ex.ErrorCategory;
