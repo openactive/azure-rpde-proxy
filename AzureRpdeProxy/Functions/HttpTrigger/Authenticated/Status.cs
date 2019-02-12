@@ -12,6 +12,7 @@ using System.Collections.Generic;
 using Microsoft.Azure.ServiceBus.Core;
 using System.Linq;
 using Microsoft.Extensions.Configuration;
+using Newtonsoft.Json.Converters;
 
 namespace AzureRpdeProxy
 {
@@ -57,6 +58,10 @@ namespace AzureRpdeProxy
             
             return new JsonResult(list.OrderBy(x => x.feedState.name).ToList(), new JsonSerializerSettings
             {
+                Converters = new List<JsonConverter>()
+                {
+                    new StringEnumConverter()
+                },
                 Formatting = Formatting.Indented
             });
         }

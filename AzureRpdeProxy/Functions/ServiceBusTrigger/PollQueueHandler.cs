@@ -278,42 +278,43 @@ namespace AzureRpdeProxy
         {
             // Attempt to get next page
             SourcePage sourcePage = new SourcePage();
+            HttpResponseMessage response = null;
             try
             {
-                var reponse = await httpClient.GetAsync(nextUrl);
-
-                // Record time of response, to help calculate last page details
-                var dateTimeReceived = DateTimeOffset.UtcNow;
-
-                if (reponse.StatusCode == HttpStatusCode.Unauthorized)
-                {
-                    // 401 most likely indicates OWS key has changed
-                    throw new ExpectedPollException(ExpectedErrorCategory.Unauthorised401);
-                }
-
-                // Attempt to Deserialize
-                var data = JsonConvert.DeserializeObject<RpdeFeed>(await reponse.Content.ReadAsStringAsync());
-
-                if (data?.license != Utils.CC_BY_LICENSE || data?.next == null || data?.items == null)
-                {
-                    // Invalid RPDE Page indicates error that should be retried
-                    throw new ExpectedPollException(ExpectedErrorCategory.InvalidRPDEPage);
-                }
-
-                // Only store last page details if this is the last page
-                if (data?.items?.Count == 0 && data?.next == nextUrl)
-                {
-                    sourcePage.LastPageDetails = GetLastPageDetailsFromHeader(reponse, dateTimeReceived);
-                }
-
-                sourcePage.Content = data;
-
-                return sourcePage;
+                response = await httpClient.GetAsync(nextUrl);
             }
             catch (Exception ex)
             {
                 throw new ExpectedPollException(ExpectedErrorCategory.PageFetchError, ex);
             }
+
+            // Record time of response, to help calculate last page details
+            var dateTimeReceived = DateTimeOffset.UtcNow;
+
+            if (response.StatusCode == HttpStatusCode.Unauthorized)
+            {
+                // 401 most likely indicates OWS key has changed
+                throw new ExpectedPollException(ExpectedErrorCategory.Unauthorised401);
+            }
+
+            // Attempt to Deserialize
+            var data = JsonConvert.DeserializeObject<RpdeFeed>(await response.Content.ReadAsStringAsync());
+
+            if (data?.license != Utils.CC_BY_LICENSE || data?.next == null || data?.items == null)
+            {
+                // Invalid RPDE Page indicates error that should be retried
+                throw new ExpectedPollException(ExpectedErrorCategory.InvalidRPDEPage);
+            }
+
+            // Only store last page details if this is the last page
+            if (data?.items?.Count == 0 && data?.next == nextUrl)
+            {
+                sourcePage.LastPageDetails = GetLastPageDetailsFromHeader(response, dateTimeReceived);
+            }
+
+            sourcePage.Content = data;
+
+            return sourcePage;
         }
 
         private static LastItem GetLastPageDetailsFromHeader(HttpResponseMessage response, DateTimeOffset dateTimeReceived)
