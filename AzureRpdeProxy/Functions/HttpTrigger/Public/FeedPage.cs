@@ -238,11 +238,11 @@ namespace AzureRpdeProxy
 
         public static HttpResponseMessage CreateErrorResponse(this HttpRequest req, HttpStatusCode statusCode, string errorMessage)
         {
-            // Note this error forces the response to JSON to remove the need for content negotiation
+            // Note this error forces the response to JSON to remove the need for content negotiation, and sets a 10 minute MaxAge for transient errors
             return req.CreateJSONResponse(statusCode, new
             {
                 message = errorMessage
-            });
+            }).AsCachable(TimeSpan.FromMinutes(10));
         }
 
         public static HttpResponseMessage AsCachable(this HttpResponseMessage request, TimeSpan cacheMaxAge)
