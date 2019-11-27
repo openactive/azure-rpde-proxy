@@ -90,7 +90,13 @@ namespace AzureRpdeProxy
                 feedStateItem.lastError = ex.ToString();
 
                 feedStateItem.purgeRetries++;
-                var delaySeconds = (int)BigInteger.Pow(2, feedStateItem.purgeRetries);
+
+                TimeSpan timeSpan = new TimeSpan(1, 0, 0);
+                Random randomTest = new Random();
+                TimeSpan newSpan = TimeSpan.FromMinutes(randomTest.Next(0, (int)timeSpan.TotalMinutes));
+
+                int delaySeconds = (int)newSpan.TotalSeconds;
+
                 log.LogWarning($"Unexpected error purging items: Retrying '{feedStateItem.name}' attempt {feedStateItem.purgeRetries} in {delaySeconds} seconds");
 
                 // Check lock exists, as close to a transaction as we can get
