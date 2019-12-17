@@ -40,7 +40,7 @@ This proxy uses the following resources:
 
 ## Deployment
 
-The deployment template above deploys the Azure RPDE Proxy Function App and links it to continous integration, to allow updates to be deployed from this GitHub repository.
+The deployment template included in this repository deploys the Azure RPDE Proxy Function App and links it to continous integration, to allow updates to be deployed from this GitHub repository.
 
 ### Deploy Steps:
 
