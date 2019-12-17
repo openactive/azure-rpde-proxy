@@ -7,6 +7,8 @@ Azure RPDE Proxy allowing client self-registration
 
 The proxy makes use of a serverless architecture with controlled throughput to provide scalability with a cap on cost. One proxy can be used by all source RPDE servers, and accepts feed registrations from individual source RPDE server instances.
 
+![RPDE Proxy Architecture](rpde-proxy-architecture.png)
+
 1. When the source RPDE server is initialised, it performs a simple call to register itself with the proxy, which includes the alias  (an alphanumeric name for the feed) configured in app.config. The source RPDE server dataset site will reflect the proxy feed URLs instead of the source RPDE server’s own feed URLs.
 
 2. The feed list stores a list of all registered feeds. If a new entry is added to the feed list by the registration endpoint, the URL of the first page from that feed is added to the processing queue.
