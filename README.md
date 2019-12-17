@@ -21,6 +21,7 @@ The proxy makes use of a serverless architecture with controlled throughput to p
 
 7. The free Cloudflare CDN is used to minimise load on Azure SQL. 
 
+## Resources
 
 This proxy uses the following resources:
 
